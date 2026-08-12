@@ -1,0 +1,17 @@
+# Backline Inference API - GPU tier. Roughly 4-5 GB of wheels, plus another
+# ~6 GB of model weights fetched on first generation.
+#
+# Install order matters. Torch must come from the CUDA index BEFORE audiocraft,
+# or pip resolves a CPU-only wheel and generation silently runs on CPU (minutes
+# per chunk instead of seconds).
+#
+#   .venv\Scripts\Activate.ps1
+#   pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.1.0 torchaudio==2.1.0
+#   pip install -r requirements-gpu.txt
+#
+# Python 3.11 required: audiocraft's pins do not resolve on 3.12.
+#
+# Then set STUB_MODE=0 in inference/.env and restart the server.
+
+audiocraft==1.3.0
+faster-whisper==1.0.3

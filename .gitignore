@@ -1,0 +1,28 @@
+# Python
+inference/.venv/
+__pycache__/
+*.py[cod]
+inference/output/
+inference/.env
+
+# Node / Next.js
+node_modules/
+app/.next/
+app/out/
+app/.env
+app/.env.local
+
+# Generated backing tracks and the cache index
+cache/
+!cache/.gitkeep
+
+# Audio the user supplies. Track metadata is generated, not committed.
+app/data/songs/*
+!app/data/songs/.gitkeep
+app/data/songs.json
+app/data/imports/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
