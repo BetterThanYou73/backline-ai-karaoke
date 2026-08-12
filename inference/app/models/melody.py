@@ -291,11 +291,4 @@ def _stub_percussion(
     return out
 
 
-def estimated_seconds_per_chunk() -> float:
-    """Rough wall-clock per 30s window, for the loading screen's ETA."""
-    if config.STUB_MODE:
-        return 1.0
-    return 55.0 if registry.cuda_available() else 900.0
-
-
-__all__ = ["render_track", "stable_seed", "estimated_seconds_per_chunk"]
+__all__ = ["render_track", "stable_seed"]

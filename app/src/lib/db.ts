@@ -85,15 +85,6 @@ export function findTrack(songId: string, style: StyleId): GeneratedTrack | null
   return row ? toTrack(row) : null;
 }
 
-export function listTracksForSong(songId: string): GeneratedTrack[] {
-  const rows = connect()
-    .prepare(
-      "SELECT * FROM generated_track WHERE song_id = ? ORDER BY created_at DESC",
-    )
-    .all(songId) as TrackRow[];
-  return rows.map(toTrack);
-}
-
 export function saveTrack(input: {
   songId: string;
   style: StyleId;
@@ -129,12 +120,6 @@ export function saveTrack(input: {
   const saved = findTrack(input.songId, input.style);
   if (!saved) throw new Error("track insert did not round-trip");
   return saved;
-}
-
-export function deleteTrack(songId: string, style: StyleId): void {
-  connect()
-    .prepare("DELETE FROM generated_track WHERE song_id = ? AND style = ?")
-    .run(songId, style);
 }
 
 export function getCachedLyrics<T>(songId: string): T | null {

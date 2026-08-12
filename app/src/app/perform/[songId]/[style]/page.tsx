@@ -70,7 +70,6 @@ export default async function PerformPage({
       <PerformanceStage
         songId={song.id}
         songTitle={song.title}
-        songArtist={song.artist}
         style={style}
         skin={skin}
         lyrics={lyrics}

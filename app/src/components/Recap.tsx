@@ -8,6 +8,20 @@ import type { StyleSkin } from "@/lib/styles";
 import type { RecapStats } from "@/lib/types";
 
 /**
+ * Average mic level over the frames where someone was audible, described in
+ * words. A number out of one would read as a score, which is the thing this
+ * screen is specifically not.
+ */
+function describeEnergy(value: number): string {
+  if (value <= 0) return "Nothing picked up";
+  if (value < 0.2) return "Barely above a whisper";
+  if (value < 0.4) return "Politely, as if flatmates were in";
+  if (value < 0.65) return "A proper singing voice";
+  if (value < 0.85) return "Committed";
+  return "The neighbours know";
+}
+
+/**
  * Screen five. A summary, not a score.
  *
  * The brief cut scoring from version one deliberately, and it was right to:
@@ -85,6 +99,11 @@ export function Recap({
               </dd>
             </div>
           )}
+
+          <div>
+            <dt>How loud you got</dt>
+            <dd>{describeEnergy(stats.averageEnergy)}</dd>
+          </div>
         </dl>
 
         <div className="recap-actions">

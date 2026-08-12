@@ -23,7 +23,6 @@ type Phase =
 interface Props {
   songId: string;
   songTitle: string;
-  songArtist: string;
   style: StyleId;
   skin: StyleSkin;
   lyrics: LyricLine[];
@@ -128,19 +127,18 @@ export function PerformanceStage(props: Props) {
   }, []);
 
   const finish = useCallback(() => {
-    const engine = engineRef.current;
-    const stats = engine?.stats ?? {
+    const stats = engineRef.current?.stats ?? {
       accuracy: 0,
       notesHit: 0,
       notesTotal: 0,
       longestStreak: 0,
+      averageEnergy: 0,
     };
     setPhase({
       kind: "done",
       stats: {
         ...stats,
         durationSang: (performance.now() - startedAtRef.current) / 1000,
-        averageEnergy: 0,
       },
     });
     void engineRef.current?.dispose();

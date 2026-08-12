@@ -58,6 +58,11 @@ export class PerformanceEngine {
   private running = false;
   private rafHandle = 0;
 
+  // Averaged over frames where someone was actually audible. Including the
+  // silences would just measure how much of the song had no singing in it.
+  private energySum = 0;
+  private energyFrames = 0;
+
   constructor(private readonly options: EngineOptions) {
     this.adapter = new PitchAdapter(options.melodyContour);
     this.tempoTracker = new TempoTracker(options.bpm);
@@ -68,7 +73,11 @@ export class PerformanceEngine {
   }
 
   get stats() {
-    return this.adapter.stats;
+    return {
+      ...this.adapter.stats,
+      averageEnergy:
+        this.energyFrames > 0 ? this.energySum / this.energyFrames : 0,
+    };
   }
 
   /**
@@ -179,6 +188,11 @@ export class PerformanceEngine {
     const now = performance.now();
     const delta = Math.min(0.1, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
+
+    if (this.latest.rms > 0.012) {
+      this.energySum += Math.min(1, this.latest.rms * 9);
+      this.energyFrames++;
+    }
 
     const shift = this.adapter.update(this.latest, this.position, delta);
     const tempo = this.tempoTracker.update(this.position, delta);
