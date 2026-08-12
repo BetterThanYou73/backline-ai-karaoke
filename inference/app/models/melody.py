@@ -1,4 +1,4 @@
-"""Melody-conditioned instrumental generation.
+﻿"""Melody-conditioned instrumental generation.
 
 Two implementations behind one entry point, `render_track`:
 
@@ -30,7 +30,7 @@ from ..audio_utils import (
     normalize_peak,
 )
 from ..styles import STYLES, Style
-from . import registry
+from . import registry, stub_synth
 
 ProgressFn = Callable[[float], None]
 
@@ -189,78 +189,68 @@ def _musicgen_chunk(
         return output[0, 0].detach().float().cpu().numpy().astype(np.float32)
 
 
-# --------------------------------------------------------------------------
-# Stub path: additive synth driven by the melody contour
-# --------------------------------------------------------------------------
 
-# Per-style timbre for the stub renderer, so the six styles are actually
-# distinguishable while building the UI.
-_STUB_VOICES: dict[str, dict] = {
-    "neon": {"harmonics": [1.0, 0.5, 0.35, 0.2], "detune": 0.012, "decay": 0.75, "beat": 0.35},
-    "velvet": {"harmonics": [1.0, 0.28, 0.12], "detune": 0.004, "decay": 1.6, "beat": 0.16},
-    "riff": {"harmonics": [1.0, 0.7, 0.55, 0.45, 0.3], "detune": 0.02, "decay": 0.5, "beat": 0.42},
-    "tide": {"harmonics": [1.0, 0.45, 0.3, 0.15], "detune": 0.008, "decay": 0.9, "beat": 0.38},
-    "grove": {"harmonics": [1.0, 0.22, 0.08], "detune": 0.003, "decay": 1.9, "beat": 0.2},
-    "bloom": {"harmonics": [1.0, 0.4, 0.25, 0.1], "detune": 0.006, "decay": 0.7, "beat": 0.3},
-}
+
+# --------------------------------------------------------------------------
+# Stub path: a small arranged band, see stub_synth.py
+# --------------------------------------------------------------------------
 
 
 def _stub_chunk(
     melody: np.ndarray, sr: int, style: Style, seed: int, seconds: float
 ) -> np.ndarray:
-    voice = _STUB_VOICES.get(style.id, _STUB_VOICES["bloom"])
-    out_sr = config.GENERATION_SR
-    samples = int(seconds * out_sr)
-    rng = np.random.default_rng(seed)
+    """Placeholder instrumental, built from the source melody.
 
-    # Coarse pitch track: peak of the autocorrelation per 46ms frame. Good
-    # enough to make the stub follow the tune; the real path uses MusicGen's
-    # own chroma conditioner.
+    Extracts a coarse pitch track, then hands it to the stub arranger, which
+    infers the key, picks a progression and plays a small band over it. The
+    earlier version played the melody back as bare sine tones over a click,
+    which followed the tune correctly and still sounded like a toy.
+    """
     frame = int(0.046 * sr)
-    hop = frame
-    pitches: list[float] = []
-    for start in range(0, max(0, len(melody) - frame), hop):
-        window = melody[start : start + frame]
-        pitches.append(_autocorr_pitch(window, sr))
+    if frame <= 0:
+        frame = 1024
 
-    if not pitches:
-        pitches = [220.0]
+    pitches = np.array(
+        [
+            _autocorr_pitch(melody[start : start + frame], sr)
+            for start in range(0, max(frame, len(melody) - frame), frame)
+        ],
+        dtype=np.float32,
+    )
+    if pitches.size == 0:
+        pitches = np.zeros(1, dtype=np.float32)
 
-    out = np.zeros(samples, dtype=np.float32)
-    per_frame = max(1, samples // len(pitches))
-
-    phase = 0.0
-    for index, hz in enumerate(pitches):
-        begin = index * per_frame
-        end = min(samples, begin + per_frame)
-        if begin >= samples:
-            break
-        length = end - begin
-        if length <= 0 or hz <= 0:
-            continue
-
-        t = np.arange(length, dtype=np.float32) / out_sr
-        tone = np.zeros(length, dtype=np.float32)
-        for order, amplitude in enumerate(voice["harmonics"], start=1):
-            detune = 1.0 + voice["detune"] * (rng.random() - 0.5)
-            tone += amplitude * np.sin(
-                2 * np.pi * hz * order * detune * t + phase * order
-            )
-        tone /= max(1.0, sum(voice["harmonics"]))
-        phase = (phase + 2 * np.pi * hz * length / out_sr) % (2 * np.pi)
-
-        envelope = np.exp(-t / max(0.05, voice["decay"]))
-        out[begin:end] += 0.55 * tone * envelope
-
-        # Bass an octave and a half down, longer envelope.
-        bass = np.sin(2 * np.pi * (hz / 3.0) * t)
-        out[begin:end] += 0.3 * bass * np.exp(-t / (voice["decay"] * 2.0))
-
-    out += _stub_percussion(samples, out_sr, bpm=112.0, level=voice["beat"], rng=rng)
-    return normalize_peak(out, 0.8)
+    return stub_synth.render(
+        pitches=pitches,
+        frame_seconds=frame / sr,
+        style_id=style.id,
+        bpm=_estimate_bpm(melody, sr),
+        seconds=seconds,
+        sr=config.GENERATION_SR,
+        seed=seed,
+    )
 
 
-def _autocorr_pitch(window: np.ndarray, sr: int, fmin: float = 65.0, fmax: float = 1000.0) -> float:
+def _estimate_bpm(audio: np.ndarray, sr: int) -> float:
+    """Tempo of the source, so the stub band plays along with it."""
+    try:
+        import librosa
+
+        onset = librosa.onset.onset_strength(y=audio, sr=sr)
+        try:
+            from librosa.feature import rhythm as _rhythm
+
+            tempo = _rhythm.tempo(onset_envelope=onset, sr=sr)
+        except (ImportError, AttributeError):
+            tempo = librosa.beat.tempo(onset_envelope=onset, sr=sr)
+        return float(np.atleast_1d(tempo)[0])
+    except Exception:
+        return 100.0
+
+
+def _autocorr_pitch(
+    window: np.ndarray, sr: int, fmin: float = 65.0, fmax: float = 1000.0
+) -> float:
     if window.size < 64 or float(np.max(np.abs(window))) < 1e-3:
         return 0.0
     window = window - float(np.mean(window))
@@ -269,35 +259,10 @@ def _autocorr_pitch(window: np.ndarray, sr: int, fmin: float = 65.0, fmax: float
     max_lag = min(int(sr / fmin), correlation.size - 1)
     if max_lag <= min_lag:
         return 0.0
-    segment = correlation[min_lag:max_lag]
-    lag = int(np.argmax(segment)) + min_lag
+    lag = int(np.argmax(correlation[min_lag:max_lag])) + min_lag
     if correlation[0] <= 0 or correlation[lag] / correlation[0] < 0.3:
         return 0.0
     return float(sr) / lag
-
-
-def _stub_percussion(
-    samples: int, sr: int, bpm: float, level: float, rng: np.random.Generator
-) -> np.ndarray:
-    out = np.zeros(samples, dtype=np.float32)
-    if level <= 0:
-        return out
-    step = int(sr * 60.0 / bpm / 2.0)  # eighth notes
-    click_length = int(sr * 0.05)
-    decay = np.exp(-np.linspace(0, 12, click_length, dtype=np.float32))
-    for index, start in enumerate(range(0, samples, max(1, step))):
-        end = min(samples, start + click_length)
-        if end <= start:
-            break
-        # Downbeats get a low thud, offbeats a quiet noise tick.
-        if index % 4 == 0:
-            t = np.arange(end - start, dtype=np.float32) / sr
-            hit = np.sin(2 * np.pi * 58.0 * t) * decay[: end - start]
-            out[start:end] += level * hit
-        elif index % 2 == 0:
-            noise = rng.normal(0, 1, end - start).astype(np.float32)
-            out[start:end] += level * 0.25 * noise * decay[: end - start]
-    return out
 
 
 __all__ = ["render_track", "stable_seed"]
