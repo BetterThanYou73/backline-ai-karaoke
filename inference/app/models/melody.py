@@ -44,17 +44,33 @@ def stable_seed(song_id: str, style: str) -> int:
 def _chunk_plan(total_seconds: float) -> list[tuple[float, float]]:
     """Window start/length pairs covering `total_seconds`.
 
-    Windows are contiguous; the crossfade is applied by overlapping the joined
-    audio, not by overlapping the conditioning, so the melody stays aligned to
-    absolute song time.
+    Windows overlap by exactly the crossfade length, because the crossfade
+    consumes that much when the chunks are joined: joining two buffers with an
+    overlap of C yields len(a) + len(b) - C samples.
+
+    An earlier version planned contiguous windows, so every seam pulled the
+    whole timeline earlier by C. Generated audio at output time T then carried
+    material conditioned on source time T + k*C after k seams. That is not just
+    a cosmetic wobble: lyric timestamps and the reference melody contour are
+    both in source time, and the performance screen compares them against a
+    position in the generated track. At the default 90 seconds it drifted two
+    seconds by the end, and on a full song, seven.
     """
     chunk = max(5.0, min(config.CHUNK_SECONDS, 30.0))
+    crossfade = max(0.0, min(config.CROSSFADE_SECONDS, chunk / 2))
+    advance = max(1.0, chunk - crossfade)
+
     plan: list[tuple[float, float]] = []
     position = 0.0
     while position < total_seconds - 0.25:
+        # The final window is short; everything before it is a full chunk so
+        # the crossfade always has the material it needs on both sides.
         length = min(chunk, total_seconds - position)
         plan.append((position, length))
-        position += length
+        if position + length >= total_seconds:
+            break
+        position += advance
+
     return plan or [(0.0, min(chunk, max(total_seconds, 5.0)))]
 
 
@@ -80,7 +96,11 @@ def render_track(
     render_chunk = _stub_chunk if config.STUB_MODE else _musicgen_chunk
 
     rendered = np.zeros(0, dtype=np.float32)
-    crossfade = int(max(0.0, config.CROSSFADE_SECONDS) * config.GENERATION_SR)
+    chunk_seconds = max(5.0, min(config.CHUNK_SECONDS, 30.0))
+    crossfade = int(
+        max(0.0, min(config.CROSSFADE_SECONDS, chunk_seconds / 2))
+        * config.GENERATION_SR
+    )
 
     for index, (start, length) in enumerate(plan):
         begin = int(start * sr)
@@ -97,6 +117,11 @@ def render_track(
         )
         if progress:
             progress((index + 1) / len(plan))
+
+    # The plan overlaps windows by the crossfade so this lands on the source
+    # length, but rounding across many seams can leave it a few samples out.
+    # Lyric and melody timing are read against this, so pin it exactly.
+    rendered = match_length(rendered, int(total * config.GENERATION_SR))
 
     return normalize_peak(rendered), config.GENERATION_SR
 

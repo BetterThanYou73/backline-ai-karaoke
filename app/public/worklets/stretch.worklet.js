@@ -172,8 +172,8 @@ class StretchProcessor extends AudioWorkletProcessor {
     let bestOffset = 0;
     let bestScore = -Infinity;
 
-    // Step of 4 rather than 1. At 48 kHz that is a 12 sample resolution on the
-    // splice point, inaudible here, and it cuts the search cost fourfold.
+    // Step of 4 rather than 1: a 4 sample splice resolution, inaudible at
+    // these correction ratios, and it cuts the search cost fourfold.
     for (let candidate = low; candidate <= high; candidate += 4) {
       let correlation = 0;
       let energy = 1e-9;

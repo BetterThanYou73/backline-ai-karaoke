@@ -58,7 +58,7 @@ class JobQueue:
             return self._jobs.get(job_id)
 
     def queue_position(self, job_id: str) -> Optional[int]:
-        """0 = next up. None once the job is no longer waiting."""
+        """0 = first in line behind whatever is running. None once not waiting."""
         with self._lock:
             waiting = [
                 jid
@@ -68,9 +68,25 @@ class JobQueue:
         return waiting.index(job_id) if job_id in waiting else None
 
     def _evict_old(self, keep: int = 200) -> None:
-        while len(self._order) > keep:
-            stale = self._order.pop(0)
-            self._jobs.pop(stale, None)
+        """Drop the oldest finished jobs.
+
+        Only finished ones. Evicting by insertion order alone could remove a
+        job that was still queued, after which the worker's lookup returned
+        None and skipped it silently while the client polled a job id that no
+        longer existed, forever.
+        """
+        if len(self._order) <= keep:
+            return
+
+        remaining: list[str] = []
+        for job_id in self._order:
+            job = self._jobs.get(job_id)
+            finished = job is None or job.status in ("done", "error")
+            if len(self._order) - len(remaining) > keep and finished:
+                self._jobs.pop(job_id, None)
+                continue
+            remaining.append(job_id)
+        self._order = remaining
 
     def _loop(self) -> None:
         while True:
@@ -93,12 +109,22 @@ class JobQueue:
 
 
 _singleton: Optional[JobQueue] = None
+_singleton_lock = threading.Lock()
 
 
 def jobs() -> JobQueue:
+    """The one job queue.
+
+    Double-checked under a lock: FastAPI runs sync endpoints in a threadpool,
+    so two simultaneous /generate requests could each build a JobQueue and each
+    start a worker thread. Two workers on one GPU is exactly the out of memory
+    this module exists to prevent.
+    """
     global _singleton
     if _singleton is None:
-        _singleton = JobQueue()
+        with _singleton_lock:
+            if _singleton is None:
+                _singleton = JobQueue()
     return _singleton
 
 

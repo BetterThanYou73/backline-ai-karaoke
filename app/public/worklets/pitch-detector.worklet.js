@@ -95,14 +95,26 @@ class PitchDetector extends AudioWorkletProcessor {
     const onset = rms > this.previousEnergy * 1.6 && rms > 0.02;
     this.previousEnergy = this.previousEnergy * 0.7 + rms * 0.3;
 
+    // Sequence number so the main thread can tell a fresh estimate from the
+    // last one it already saw. The control loop runs on animation frames,
+    // which are three to five times faster than this, and without a sequence
+    // it counted the same estimate repeatedly.
+    this.sequence = (this.sequence || 0) + 1;
+
     // Below the noise floor there is no point running YIN at all.
     if (rms < 0.006) {
-      this.port.postMessage({ f0: 0, clarity: 0, rms, onset: false });
+      this.port.postMessage({
+        f0: 0,
+        clarity: 0,
+        rms,
+        onset: false,
+        seq: this.sequence,
+      });
       return;
     }
 
     const { f0, clarity } = this.yin();
-    this.port.postMessage({ f0, clarity, rms, onset });
+    this.port.postMessage({ f0, clarity, rms, onset, seq: this.sequence });
   }
 
   /** Difference function, cumulative mean normalisation, absolute threshold. */

@@ -155,6 +155,72 @@ async function testPitchDetector(hz: number): Promise<Result> {
   };
 }
 
+/**
+ * How much source audio a render consumed, measured from the worklet's own
+ * read position.
+ *
+ * This is the only thing that actually tests the tempo axis. Measuring pitch
+ * alone cannot: the test tone is stationary, and a stationary tone stretched by
+ * any factor is the same tone, so a processor that ignored `tempo` outright
+ * passed both tempo rows. Consuming N seconds of source in M seconds of output
+ * is what "tempo" means here.
+ */
+async function measureConsumption(
+  tempo: number,
+  pitch: number,
+  seconds: number,
+): Promise<number> {
+  const context = new OfflineAudioContext(1, Math.floor(RATE * seconds), RATE);
+  await context.audioWorklet.addModule("/worklets/stretch.worklet.js");
+
+  const source = toneBuffer(context, 440, 12);
+  const channel = new Float32Array(source.getChannelData(0));
+
+  const node = new AudioWorkletNode(context, "adaptive-stretch", {
+    numberOfInputs: 0,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    processorOptions: {
+      channels: [channel.buffer],
+      sampleRate: RATE,
+      tempo,
+      pitch,
+      playing: true,
+    },
+  });
+
+  let lastPosition = 0;
+  node.port.onmessage = (event) => {
+    if (event.data?.type === "position") lastPosition = event.data.seconds;
+  };
+
+  node.connect(context.destination);
+  await context.startRendering();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  return lastPosition;
+}
+
+async function testTempo(
+  label: string,
+  tempo: number,
+  seconds = 1.5,
+): Promise<Result> {
+  const consumed = await measureConsumption(tempo, 1, seconds);
+  // Position messages arrive every 2400 samples, so the last one lands a
+  // little before the end of the render.
+  const observed = consumed / seconds;
+  const error = Math.abs(observed - tempo) / tempo;
+
+  return {
+    name: label,
+    detail: `${consumed.toFixed(3)}s of source consumed in ${seconds}s of output`,
+    expected: `${tempo.toFixed(2)}x source consumed, within 6 percent`,
+    actual: `${observed.toFixed(3)}x`,
+    pass: error < 0.06,
+  };
+}
+
 async function testStretch(
   label: string,
   tempo: number,
@@ -237,15 +303,21 @@ export default function DspTestPage() {
           ),
         );
 
-        // Tempo only: this is the one that catches a broken WSOLA stage, since
-        // a naive resampler would drag pitch up with the tempo.
+        // Tempo, checked on both axes at once. The pitch row proves a naive
+        // resampler is not dragging pitch along with the tempo; the
+        // consumption row proves the tempo actually changed, which the pitch
+        // measurement alone cannot see.
         collected.push(
           await testStretch("Speed up 15 percent, pitch held", 1.15, 1, 440, 440),
         );
+        collected.push(await testTempo("Speed up 15 percent, source consumed", 1.15));
 
         collected.push(
           await testStretch("Slow down 15 percent, pitch held", 0.85, 1, 440, 440),
         );
+        collected.push(await testTempo("Slow down 15 percent, source consumed", 0.85));
+
+        collected.push(await testTempo("Unity consumes source in real time", 1.0));
 
         // Bypass path: both ratios at unity should be a clean passthrough.
         collected.push(await testStretch("Unity passthrough", 1, 1, 440, 440));

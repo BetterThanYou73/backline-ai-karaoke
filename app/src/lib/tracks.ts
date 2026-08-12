@@ -12,12 +12,20 @@ import type { StyleId, TrackJob } from "./types";
 /**
  * Cache-or-generate for one song and style combination.
  *
- * The in-flight map is what stops a double click, or two tabs, from queueing
- * the same expensive render twice. It lives in memory only, which is fine: a
- * lost entry degrades to one duplicate render, never to a corrupt cache.
+ * The in-flight map stops a double click, or two tabs, from queueing the same
+ * expensive render twice. The entry is claimed synchronously before the await
+ * on the inference call: an earlier version set it after, so two concurrent
+ * requests both passed the check and both submitted a GPU job, and the second
+ * claim orphaned the first, which still ran to completion on the single worker
+ * while the user waited behind it.
+ *
+ * In memory only, and per module instance, so it is a best-effort guard rather
+ * than a lock. Worst case is one duplicate render, never a corrupt cache.
  */
 
-const inFlight = new Map<string, string>();
+type InFlight = { jobId: string } | { pending: Promise<TrackJob> };
+
+const inFlight = new Map<string, InFlight>();
 
 function comboKey(songId: string, style: StyleId): string {
   return `${songId}::${style}`;
@@ -40,28 +48,42 @@ export async function requestTrack(
   }
 
   const key = comboKey(songId, style);
-  const existingJob = inFlight.get(key);
-  if (existingJob) {
-    return { state: "pending", jobId: existingJob, progress: 0 };
+  const existing = inFlight.get(key);
+  if (existing) {
+    if ("jobId" in existing) {
+      return { state: "pending", jobId: existing.jobId, progress: 0 };
+    }
+    // A submission for this combination is already in flight. Wait for it
+    // rather than starting a second GPU job.
+    return existing.pending;
   }
 
   const settings = getSettings();
 
-  try {
+  const pending = (async (): Promise<TrackJob> => {
     const { job_id } = await inference.generate({
       audioPath: song.absolutePath,
       style,
       songId,
       maxRenderSeconds: settings.maxRenderSeconds,
     });
-    inFlight.set(key, job_id);
+    inFlight.set(key, { jobId: job_id });
     return {
       state: "pending",
       jobId: job_id,
       progress: 0,
       etaSeconds: await estimateEta(settings.maxRenderSeconds, song.duration),
     };
+  })();
+
+  // Claimed synchronously, before anything is awaited, which is what makes
+  // the check above meaningful.
+  inFlight.set(key, { pending });
+
+  try {
+    return await pending;
   } catch (error) {
+    inFlight.delete(key);
     return {
       state: "error",
       error: error instanceof Error ? error.message : String(error),

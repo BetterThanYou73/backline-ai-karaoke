@@ -7,7 +7,7 @@ import type { LyricLine } from "@/lib/types";
 /**
  * Karaoke captions.
  *
- * Three lines visible: what just went, what is now, what is next. A full
+ * A four line window: one behind, the current line, and two ahead. A full
  * scrolling transcript is harder to sing from, because finding your place
  * costs more attention than the words are worth.
  *

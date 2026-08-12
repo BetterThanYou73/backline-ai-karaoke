@@ -1,7 +1,9 @@
 import {
+  DEFAULT_LIMITS,
   PitchAdapter,
   TempoTracker,
   semitonesToRatio,
+  type AdaptiveLimits,
   type PitchFrame,
 } from "./adaptive";
 
@@ -38,6 +40,10 @@ export interface EngineOptions {
   trackUrl: string;
   melodyContour: [number, number | null][];
   bpm: number | null;
+  /** Correction bounds. Zero on either axis locks that axis. */
+  limits?: AdaptiveLimits;
+  /** When false the track plays exactly as rendered. */
+  adaptive?: boolean;
   onFrame: (frame: EngineFrame) => void;
   onEnded: () => void;
 }
@@ -54,7 +60,8 @@ export class PerformanceEngine {
 
   private position = 0;
   private lastFrameTime = 0;
-  private latest: PitchFrame = { f0: 0, clarity: 0, rms: 0, onset: false };
+  private latest: PitchFrame = { f0: 0, clarity: 0, rms: 0, onset: false, seq: 0 };
+  private scoredSeq = 0;
   private running = false;
   private rafHandle = 0;
 
@@ -63,9 +70,20 @@ export class PerformanceEngine {
   private energySum = 0;
   private energyFrames = 0;
 
+  private readonly limits: AdaptiveLimits;
+  private readonly adaptive: boolean;
+
   constructor(private readonly options: EngineOptions) {
-    this.adapter = new PitchAdapter(options.melodyContour);
-    this.tempoTracker = new TempoTracker(options.bpm);
+    this.limits = options.limits ?? DEFAULT_LIMITS;
+    this.adaptive = options.adaptive ?? true;
+    this.adapter = new PitchAdapter(
+      options.melodyContour,
+      this.adaptive ? this.limits.maxSemitones : 0,
+    );
+    this.tempoTracker = new TempoTracker(
+      options.bpm,
+      this.adaptive ? this.limits.maxTempoDrift : 0,
+    );
   }
 
   get hasMelodyReference(): boolean {
@@ -87,6 +105,19 @@ export class PerformanceEngine {
    * decode in the middle of a performance.
    */
   async prepare(): Promise<void> {
+    try {
+      await this.buildGraph();
+    } catch (error) {
+      // Every failure path here leaves something open: an AudioContext, and
+      // possibly the microphone. Browsers cap concurrent AudioContexts per
+      // page, so a few denied-mic retries used to make the page unusable until
+      // a reload, with the camera light still on.
+      await this.dispose();
+      throw error;
+    }
+  }
+
+  private async buildGraph(): Promise<void> {
     const context = new AudioContext({ latencyHint: "interactive" });
     this.context = context;
 
@@ -157,7 +188,8 @@ export class PerformanceEngine {
     this.detector.port.onmessage = (event) => {
       const frame = event.data as PitchFrame;
       this.latest = frame;
-      if (frame.onset) this.tempoTracker.onset(this.position);
+      // Wall clock, not track position: see TempoTracker.onset.
+      if (frame.onset) this.tempoTracker.onset(performance.now() / 1000);
     };
 
     // The detector has no outputs, so it is not connected onward. Chrome still
@@ -189,13 +221,23 @@ export class PerformanceEngine {
     const delta = Math.min(0.1, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
 
-    if (this.latest.rms > 0.012) {
-      this.energySum += Math.min(1, this.latest.rms * 9);
-      this.energyFrames++;
+    // Only tally a pitch frame once, however many animation frames observe it.
+    const isNewEstimate = this.latest.seq !== this.scoredSeq;
+    if (isNewEstimate) {
+      this.scoredSeq = this.latest.seq;
+      if (this.latest.rms > 0.012) {
+        this.energySum += Math.min(1, this.latest.rms * 9);
+        this.energyFrames++;
+      }
     }
 
-    const shift = this.adapter.update(this.latest, this.position, delta);
-    const tempo = this.tempoTracker.update(this.position, delta);
+    const shift = this.adapter.update(
+      this.latest,
+      this.position,
+      delta,
+      isNewEstimate,
+    );
+    const tempo = this.tempoTracker.update(delta);
 
     this.stretch?.port.postMessage({
       type: "params",

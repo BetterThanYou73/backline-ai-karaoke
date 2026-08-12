@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 
+import { CalmVisuals } from "@/components/SkinProvider";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -19,7 +21,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <CalmVisuals />
+        {children}
+      </body>
     </html>
   );
 }

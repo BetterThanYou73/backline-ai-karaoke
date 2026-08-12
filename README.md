@@ -131,22 +131,28 @@ no permissions, so it runs anywhere the app builds.
 
 This exists because the audio path is the part most likely to be quietly wrong
 and the hardest to check by ear: a pitch shift three percent off still sounds
-like music. It caught two real bugs on its first run. Current state is seven of
-seven, every measurement within a cent of target:
+like music. It has caught three real bugs so far, one of them in itself.
+Current state is ten of ten:
 
-| Test                              | Expected | Measured             |
-| --------------------------------- | -------- | -------------------- |
-| YIN detects 220 Hz                | 220 Hz   | 220.0 Hz, +0.1 cents |
-| YIN detects 440 Hz                | 440 Hz   | 440.2 Hz, +0.8 cents |
-| Shift up 2 semitones              | 493.9 Hz | 494.0 Hz, +0.4 cents |
-| Shift down 2 semitones            | 392.0 Hz | 391.9 Hz, -0.3 cents |
-| Speed up 15 percent, pitch held   | 440 Hz   | 440.0 Hz, -0.1 cents |
-| Slow down 15 percent, pitch held  | 440 Hz   | 440.1 Hz, +0.4 cents |
-| Unity passthrough                 | 440 Hz   | 440.0 Hz, +0.1 cents |
+| Test                                | Expected             | Measured             |
+| ----------------------------------- | -------------------- | -------------------- |
+| YIN detects 220 Hz                  | 220 Hz               | 220.0 Hz, +0.1 cents |
+| YIN detects 440 Hz                  | 440 Hz               | 440.2 Hz, +0.8 cents |
+| Shift up 2 semitones                | 493.9 Hz             | 494.0 Hz, +0.4 cents |
+| Shift down 2 semitones              | 392.0 Hz             | 391.9 Hz, -0.3 cents |
+| Speed up 15 percent, pitch held     | 440 Hz               | 440.0 Hz, -0.1 cents |
+| Speed up 15 percent, source consumed| 1.15x                | 1.129x               |
+| Slow down 15 percent, pitch held    | 440 Hz               | 440.1 Hz, +0.4 cents |
+| Slow down 15 percent, source consumed| 0.85x               | 0.834x               |
+| Unity consumes source in real time  | 1.00x                | 0.981x               |
+| Unity passthrough                   | 440 Hz               | 440.0 Hz, +0.1 cents |
 
-The two tempo rows are the ones that matter most: they change speed by 15
-percent while pitch stays put, which is exactly what a broken time-stretch
-cannot do.
+The consumption rows exist because the pitch rows cannot test tempo. The test
+signal is a stationary tone, and a stationary tone time-stretched by any factor
+is the same tone, so an earlier version of this bench passed both tempo rows
+while measuring nothing about tempo at all: a processor that ignored the
+setting outright would have scored identically. Measuring how much source audio
+was consumed per second of output is what actually pins the tempo axis down.
 
 ### Adding songs
 

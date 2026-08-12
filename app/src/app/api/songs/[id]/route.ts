@@ -21,8 +21,7 @@ export async function GET(
 
   const lyrics = await resolveLyrics(song);
 
-  // Duration is filled in by the background analysis pass. Until that lands
-  // the client reads it off the audio element once the buffer decodes.
+  // Duration stays 0 until the background analysis pass fills it in.
   return NextResponse.json({
     song: { ...toPublicSong(song), lyrics },
     melodyContour: song.melodyContour,

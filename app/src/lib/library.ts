@@ -143,15 +143,27 @@ async function readSidecarLyrics(audioPath: string): Promise<LyricLine[] | null>
   }
 }
 
+/**
+ * List the audio in one directory.
+ *
+ * Returns null when the directory could not be read at all, which the caller
+ * must treat differently from an empty directory. An earlier version returned
+ * [] for both, and since the reconcile builds the new index purely from what
+ * was discovered, a single transient EBUSY produced an empty index, which was
+ * then committed and handed to the cache pruner, deleting every generated
+ * track on disk. One failed readdir could destroy hours of GPU output.
+ */
 async function scanDirectory(
   directory: string,
   source: Song["source"],
-): Promise<SongRecord[]> {
+): Promise<SongRecord[] | null> {
   let entries: fs.Dirent[];
   try {
     entries = await fsp.readdir(directory, { withFileTypes: true });
-  } catch {
-    return [];
+  } catch (error) {
+    // A directory that simply does not exist yet is empty, not broken.
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+    return null;
   }
 
   const found: SongRecord[] = [];
@@ -172,7 +184,10 @@ async function scanDirectory(
     const { title, artist } = titleFromFilename(entry.name);
 
     found.push({
-      id: songId(entry.name),
+      // Scoped by source directory: without it, importing a file whose name
+      // matches a built-in one silently replaced the built-in entry, and the
+      // pruner then deleted the loser's renders.
+      id: songId(`${source}/${entry.name}`),
       title,
       artist,
       source,
@@ -192,43 +207,79 @@ async function scanDirectory(
 }
 
 /**
+ * Serializes every read-modify-write of the index.
+ *
+ * A scan does slow async I/O between reading the index and writing it back,
+ * and the analysis queue writes results into the same file throughout. Without
+ * this, a completed analysis landing inside that window was overwritten by the
+ * scan's stale snapshot, which reset `analyzed` to false, which made the
+ * analysis queue pick the same song up again, forever. The library polls every
+ * 2.5 seconds while anything is unanalysed, so the window came around
+ * constantly.
+ */
+let indexWrites: Promise<unknown> = Promise.resolve();
+
+function withIndexLock<T>(work: () => T | Promise<T>): Promise<T> {
+  const result = indexWrites.then(work, work);
+  indexWrites = result.catch(() => undefined);
+  return result;
+}
+
+/**
  * Reconcile the folder with the index. New files get a placeholder record and
  * are queued for analysis; files that disappeared are dropped.
  */
 export async function scanLibrary(): Promise<SongRecord[]> {
-  const index = readIndex();
-  const discovered = [
-    ...(await scanDirectory(SONGS_DIR, "ncs")),
-    ...(await scanDirectory(IMPORTS_DIR, "import")),
-  ];
+  const [songsDir, importsDir] = await Promise.all([
+    scanDirectory(SONGS_DIR, "ncs"),
+    scanDirectory(IMPORTS_DIR, "import"),
+  ]);
 
-  const next: Index = {};
-  for (const song of discovered) {
-    const existing = index[song.id];
-
-    if (!existing) {
-      next[song.id] = song;
-      continue;
-    }
-
-    // The bytes changed underneath us, so cached tempo, key and melody are
-    // describing audio that is no longer there. Keep the id, drop the analysis.
-    if (existing.fingerprint !== song.fingerprint) {
-      next[song.id] = song;
-      continue;
-    }
-
-    next[song.id] = {
-      ...existing,
-      // Path can move between scans; the analysis is what we are keeping.
-      absolutePath: song.absolutePath,
-      file: song.file,
-      source: song.source,
-      lyrics: song.lyrics.length ? song.lyrics : existing.lyrics,
-    };
+  // If either directory could not be read, we do not actually know what the
+  // library contains, and reconciling against a partial view would delete
+  // whatever it failed to see. Serve what we have and try again next time.
+  if (songsDir === null || importsDir === null) {
+    return Object.values(readIndex()).sort((a, b) => a.title.localeCompare(b.title));
   }
 
-  writeIndex(next);
+  const discovered = [...songsDir, ...importsDir];
+
+  const next = await withIndexLock(() => {
+    // Read inside the lock, after the slow directory I/O, so analysis results
+    // written while we were scanning are still here.
+    const index = readIndex();
+    const merged: Index = {};
+
+    for (const song of discovered) {
+      const existing = index[song.id];
+
+      if (!existing) {
+        merged[song.id] = song;
+        continue;
+      }
+
+      // The bytes changed underneath us, so cached tempo, key and melody are
+      // describing audio that is no longer there. Keep the id, drop the
+      // analysis.
+      if (existing.fingerprint !== song.fingerprint) {
+        merged[song.id] = song;
+        continue;
+      }
+
+      merged[song.id] = {
+        ...existing,
+        // Path can move between scans; the analysis is what we are keeping.
+        absolutePath: song.absolutePath,
+        file: song.file,
+        source: song.source,
+        lyrics: song.lyrics.length ? song.lyrics : existing.lyrics,
+      };
+    }
+
+    writeIndex(merged);
+    return merged;
+  });
+
   void pruneCache(new Set(Object.keys(next)));
   void runAnalysisQueue();
   return Object.values(next).sort((a, b) => a.title.localeCompare(b.title));
@@ -256,13 +307,18 @@ export function getSong(id: string): SongRecord | null {
   return readIndex()[id] ?? null;
 }
 
-export function updateSong(id: string, patch: Partial<SongRecord>): SongRecord | null {
-  const index = { ...readIndex() };
-  const current = index[id];
-  if (!current) return null;
-  index[id] = { ...current, ...patch };
-  writeIndex(index);
-  return index[id];
+export function updateSong(
+  id: string,
+  patch: Partial<SongRecord>,
+): Promise<SongRecord | null> {
+  return withIndexLock(() => {
+    const index = { ...readIndex() };
+    const current = index[id];
+    if (!current) return null;
+    index[id] = { ...current, ...patch };
+    writeIndex(index);
+    return index[id];
+  });
 }
 
 /**
@@ -285,7 +341,7 @@ export async function runAnalysisQueue(): Promise<void> {
 
       try {
         const result = await inference.analyze(pending.absolutePath);
-        updateSong(pending.id, {
+        await updateSong(pending.id, {
           bpm: result.bpm,
           key: result.key,
           duration: result.duration,
@@ -294,9 +350,9 @@ export async function runAnalysisQueue(): Promise<void> {
           analysisError: undefined,
         });
       } catch (error) {
-        // Record the failure so the loop does not spin on the same file. A
-        // restart, or re-adding the file, clears it.
-        updateSong(pending.id, {
+        // Record the failure so the loop does not spin on the same file.
+        // Cleared by retryAnalysis, or by the file's bytes changing.
+        await updateSong(pending.id, {
           analysisError: error instanceof Error ? error.message : String(error),
         });
       }
@@ -304,6 +360,20 @@ export async function runAnalysisQueue(): Promise<void> {
   } finally {
     analysing = false;
   }
+}
+
+/**
+ * Clear a recorded analysis failure and try again.
+ *
+ * Without this a failed analysis was permanent: the error is persisted to
+ * songs.json, so even a restart did not clear it, and the only way out was to
+ * leave the browser and touch the file on disk. Analysis failing is not exotic
+ * either, since pyin on a long track can outrun the request timeout.
+ */
+export async function retryAnalysis(id: string): Promise<SongRecord | null> {
+  const updated = await updateSong(id, { analysisError: undefined });
+  if (updated) void runAnalysisQueue();
+  return updated;
 }
 
 export type PublicSong = Song & {

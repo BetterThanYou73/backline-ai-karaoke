@@ -53,12 +53,21 @@ export function CameraOverlay({
     let frame = 0;
     let cancelled = false;
     const sparks: { x: number; y: number; vx: number; vy: number; life: number }[] = [];
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
     async function begin() {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const opened = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480, facingMode: "user" },
         });
+        // Unmounting while the permission prompt is open means cleanup has
+        // already run and saw a null stream, so it stopped nothing. Close this
+        // one here or the camera light stays on for the life of the tab.
+        if (cancelled) {
+          opened.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        stream = opened;
       } catch {
         if (!cancelled) setStatus("denied");
         return;
@@ -73,11 +82,18 @@ export function CameraOverlay({
       try {
         const vision = await import("@mediapipe/tasks-vision");
         const fileset = await vision.FilesetResolver.forVisionTasks(WASM_ROOT);
-        landmarker = (await vision.FaceLandmarker.createFromOptions(fileset, {
+        const created = (await vision.FaceLandmarker.createFromOptions(fileset, {
           baseOptions: { modelAssetPath: LANDMARK_MODEL, delegate: "GPU" },
           runningMode: "VIDEO",
           numFaces: 1,
-        })) as unknown as typeof landmarker;
+        })) as unknown as NonNullable<typeof landmarker>;
+        // Same race as the camera: this load takes seconds over a CDN, and
+        // cleanup may already have run and closed nothing.
+        if (cancelled) {
+          created.close();
+          return;
+        }
+        landmarker = created;
       } catch {
         // Offline, or the CDN is blocked. Keep the camera, drop the tracking.
         if (!cancelled) setStatus("no-landmarks");
@@ -124,9 +140,15 @@ export function CameraOverlay({
         const { energy, accuracy, singing } = reactionRef.current;
         const time = performance.now() / 1000;
 
+        // Canvas animation is out of CSS's reach, so the reduced-motion
+        // preference has to be honoured here explicitly. This used to be
+        // claimed in a comment and implemented nowhere.
+        const calm =
+          reducedMotion.matches || document.body.dataset.calm === "true";
+
         // Aura: radius follows loudness, colour warms with accuracy. Slow
         // sine, no flashing.
-        const pulse = 1 + Math.sin(time * 2.4) * 0.06;
+        const pulse = calm ? 1 : 1 + Math.sin(time * 2.4) * 0.06;
         const radius = (70 + energy * 190) * pulse;
         const gradient = context.createRadialGradient(
           headX,
@@ -147,7 +169,7 @@ export function CameraOverlay({
         context.fill();
 
         // Sparks from the mouth while actually singing, rate tied to loudness.
-        if (singing && mouthOpen > 4 && Math.random() < 0.25 + energy * 0.5) {
+        if (!calm && singing && mouthOpen > 4 && Math.random() < 0.25 + energy * 0.5) {
           sparks.push({
             x: headX + (Math.random() - 0.5) * 24,
             y: mouthY,

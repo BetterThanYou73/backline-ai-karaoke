@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { BacklineCrew } from "@/components/BacklineCrew";
@@ -10,6 +11,7 @@ import { LyricsView } from "@/components/LyricsView";
 import { Recap } from "@/components/Recap";
 import { PerformanceEngine, type EngineFrame } from "@/audio/engine";
 import type { StyleSkin } from "@/lib/styles";
+import type { Settings } from "@/lib/settings";
 import type { LyricLine, RecapStats, StyleId, TrackJob } from "@/lib/types";
 
 type Phase =
@@ -31,13 +33,31 @@ interface Props {
 }
 
 export function PerformanceStage(props: Props) {
+  const router = useRouter();
   const [phase, setPhase] = useState<Phase>({ kind: "loading", progress: 0 });
   const [frame, setFrame] = useState<EngineFrame | null>(null);
   const [clock, setClock] = useState(0);
 
+  const [settings, setSettings] = useState<Settings | null>(null);
+
   const engineRef = useRef<PerformanceEngine | null>(null);
   const trackUrlRef = useRef<string | null>(null);
   const startedAtRef = useRef(0);
+
+  // Loaded before a take so the correction bounds and the camera choice are
+  // the ones the user actually asked for.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data) => {
+        if (!cancelled) setSettings(data.settings);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Cache-or-generate, then poll. The server hides the job queue behind three
   // states, so this only has to care about cached, pending and error.
@@ -45,33 +65,61 @@ export function PerformanceStage(props: Props) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
-    async function poll(jobId: string) {
-      if (cancelled) return;
-      const response = await fetch(
-        `/api/tracks?jobId=${encodeURIComponent(jobId)}&songId=${encodeURIComponent(
-          props.songId,
-        )}&style=${props.style}`,
-        { cache: "no-store" },
-      );
-      const job = (await response.json()) as TrackJob;
+    // A transient failure must not end the poll loop. Without this, one
+    // non-JSON response, say a proxy error page, rejected into nothing, no
+    // further poll was scheduled, and the user sat on "Tuning your stage"
+    // forever with no feedback and no way back.
+    let consecutiveFailures = 0;
+
+    async function poll(jobId: string, eta?: number) {
       if (cancelled) return;
 
-      if (job.state === "cached" && job.track) {
-        trackUrlRef.current = job.track.audioUrl;
-        setPhase({ kind: "ready", trackUrl: job.track.audioUrl });
-        return;
-      }
-      if (job.state === "error") {
-        setPhase({ kind: "error", message: job.error ?? "generation failed" });
-        return;
+      try {
+        const response = await fetch(
+          `/api/tracks?jobId=${encodeURIComponent(jobId)}&songId=${encodeURIComponent(
+            props.songId,
+          )}&style=${props.style}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok && response.status !== 502) {
+          throw new Error(`status ${response.status}`);
+        }
+
+        const job = (await response.json()) as TrackJob;
+        if (cancelled) return;
+        consecutiveFailures = 0;
+
+        if (job.state === "cached" && job.track) {
+          trackUrlRef.current = job.track.audioUrl;
+          setPhase({ kind: "ready", trackUrl: job.track.audioUrl });
+          return;
+        }
+        if (job.state === "error") {
+          setPhase({ kind: "error", message: job.error ?? "generation failed" });
+          return;
+        }
+
+        setPhase({
+          kind: "loading",
+          progress: job.progress ?? 0,
+          queuePosition: job.queuePosition,
+          eta,
+        });
+      } catch (error) {
+        if (cancelled) return;
+        consecutiveFailures++;
+        if (consecutiveFailures >= 8) {
+          setPhase({
+            kind: "error",
+            message: `Lost contact with the app server while rendering (${
+              error instanceof Error ? error.message : String(error)
+            }).`,
+          });
+          return;
+        }
       }
 
-      setPhase({
-        kind: "loading",
-        progress: job.progress ?? 0,
-        queuePosition: job.queuePosition,
-      });
-      timer = setTimeout(() => void poll(jobId), 1200);
+      timer = setTimeout(() => void poll(jobId, eta), 1200);
     }
 
     async function begin() {
@@ -89,7 +137,9 @@ export function PerformanceStage(props: Props) {
           setPhase({ kind: "ready", trackUrl: job.track.audioUrl });
         } else if (job.state === "pending" && job.jobId) {
           setPhase({ kind: "loading", progress: 0, eta: job.etaSeconds });
-          void poll(job.jobId);
+          // Carried through every poll, so the estimate does not vanish the
+          // moment the first poll comes back.
+          void poll(job.jobId, job.etaSeconds);
         } else {
           setPhase({ kind: "error", message: job.error ?? "could not start a render" });
         }
@@ -155,6 +205,11 @@ export function PerformanceStage(props: Props) {
         trackUrl,
         melodyContour: props.melodyContour,
         bpm: props.bpm,
+        adaptive: settings?.adaptivePlayback ?? true,
+        limits: {
+          maxSemitones: settings?.maxSemitones ?? 2,
+          maxTempoDrift: settings?.maxTempoDrift ?? 0.15,
+        },
         onFrame: setFrame,
         onEnded: finish,
       });
@@ -172,7 +227,7 @@ export function PerformanceStage(props: Props) {
             : String(error),
       });
     }
-  }, [finish, props.bpm, props.melodyContour]);
+  }, [finish, props.bpm, props.melodyContour, settings]);
 
   if (phase.kind === "loading") {
     return (
@@ -181,6 +236,7 @@ export function PerformanceStage(props: Props) {
         progress={phase.progress}
         queuePosition={phase.queuePosition}
         etaSeconds={phase.eta}
+        onCancel={() => router.push(`/style/${props.songId}`)}
       />
     );
   }
@@ -217,10 +273,22 @@ export function PerformanceStage(props: Props) {
   return (
     <div className="stage">
       <div className="stage-main">
-        <CameraOverlay
-          skin={props.skin}
-          reaction={{ energy, accuracy, singing }}
-        />
+        {/* Only once the take has started, and only if asked for. Rendering it
+            on the ready screen fired a camera permission prompt while the
+            panel beside it was still explaining that starting would ask. */}
+        {settings?.cameraOverlay !== false && phase.kind === "singing" ? (
+          <CameraOverlay skin={props.skin} reaction={{ energy, accuracy, singing }} />
+        ) : (
+          <div className="camera-wrap camera-idle">
+            <BacklineCrew
+              skin={props.skin}
+              className="camera-idle-art"
+              energy={energy}
+              accuracy={accuracy}
+              time={clock}
+            />
+          </div>
+        )}
 
         <LyricsView
           lyrics={props.lyrics}

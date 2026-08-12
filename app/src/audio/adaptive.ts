@@ -11,9 +11,31 @@
  * on confidence.
  */
 
-/** Bounds from the build spec: never warp the track further than this. */
+/**
+ * Defaults from the build spec. Both are overridable per take through
+ * settings, and both were previously hardcoded here while the settings panel
+ * happily stored values that nothing read, so "Key range: locked" still
+ * shifted the track by two semitones.
+ */
 export const MAX_SEMITONES = 2;
 export const MAX_TEMPO_DRIFT = 0.15;
+
+/**
+ * Pitch estimates per second from the detector worklet: 16 kHz analysis rate
+ * over a 512 sample hop. Used to report streaks in seconds rather than in a
+ * unit only this codebase understands.
+ */
+export const ESTIMATES_PER_SECOND = 16000 / 512;
+
+export interface AdaptiveLimits {
+  maxSemitones: number;
+  maxTempoDrift: number;
+}
+
+export const DEFAULT_LIMITS: AdaptiveLimits = {
+  maxSemitones: MAX_SEMITONES,
+  maxTempoDrift: MAX_TEMPO_DRIFT,
+};
 
 export function hzToMidi(hz: number): number {
   return 69 + 12 * Math.log2(hz / 440);
@@ -72,6 +94,8 @@ export interface PitchFrame {
   clarity: number;
   rms: number;
   onset: boolean;
+  /** Increments once per estimate, so repeats can be told from new ones. */
+  seq: number;
 }
 
 /**
@@ -87,7 +111,10 @@ export class PitchAdapter {
   private streak = 0;
   private bestStreak = 0;
 
-  constructor(private readonly contour: [number, number | null][]) {}
+  constructor(
+    private readonly contour: [number, number | null][],
+    private readonly maxSemitones: number = MAX_SEMITONES,
+  ) {}
 
   get hasReference(): boolean {
     return this.contour.length > 0;
@@ -107,7 +134,19 @@ export class PitchAdapter {
     return entry ? entry[1] : null;
   }
 
-  update(frame: PitchFrame, seconds: number, deltaSeconds: number): number {
+  /**
+   * @param counts whether this frame is a new estimate. The control loop runs
+   * on animation frames and re-reads the latest pitch frame each time, so the
+   * scoring must only tally when something new actually arrived. Otherwise the
+   * recap reported display refreshes as notes, and a 144 Hz monitor produced
+   * over twice the count for the same singing.
+   */
+  update(
+    frame: PitchFrame,
+    seconds: number,
+    deltaSeconds: number,
+    counts: boolean,
+  ): number {
     const target = this.targetAt(seconds);
     const singing = frame.f0 > 0 && frame.clarity > 0.55 && frame.rms > 0.012;
 
@@ -120,13 +159,15 @@ export class PitchAdapter {
     const sung = hzToMidi(frame.f0);
     const interval = foldedInterval(sung, target);
 
-    this.voiced++;
-    if (Math.abs(interval) <= 1) {
-      this.hits++;
-      this.streak++;
-      this.bestStreak = Math.max(this.bestStreak, this.streak);
-    } else {
-      this.streak = 0;
+    if (counts) {
+      this.voiced++;
+      if (Math.abs(interval) <= 1) {
+        this.hits++;
+        this.streak++;
+        this.bestStreak = Math.max(this.bestStreak, this.streak);
+      } else {
+        this.streak = 0;
+      }
     }
 
     // A single wild frame should not drag the track. Anything beyond a fourth
@@ -139,7 +180,7 @@ export class PitchAdapter {
   }
 
   private clamp(value: number): number {
-    return Math.max(-MAX_SEMITONES, Math.min(MAX_SEMITONES, value));
+    return Math.max(-this.maxSemitones, Math.min(this.maxSemitones, value));
   }
 
   get stats() {
@@ -147,7 +188,9 @@ export class PitchAdapter {
       accuracy: this.voiced > 0 ? this.hits / this.voiced : 0,
       notesHit: this.hits,
       notesTotal: this.voiced,
+      /** Consecutive on-pitch estimates, at about 31 per second. */
       longestStreak: this.bestStreak,
+      longestStreakSeconds: this.bestStreak / ESTIMATES_PER_SECOND,
     };
   }
 }
@@ -165,27 +208,41 @@ export class TempoTracker {
   private readonly onsets: number[] = [];
   private readonly ratio = new Smoothed(1, 4);
 
-  constructor(private readonly songBpm: number | null) {}
+  constructor(
+    private readonly songBpm: number | null,
+    private readonly maxDrift: number = MAX_TEMPO_DRIFT,
+  ) {}
 
   get usable(): boolean {
-    return this.songBpm !== null && this.songBpm > 30;
+    return this.songBpm !== null && this.songBpm > 30 && this.maxDrift > 0;
   }
 
-  onset(seconds: number): void {
-    this.onsets.push(seconds);
-    while (this.onsets.length > 0 && seconds - this.onsets[0] > 8) {
+  /**
+   * Record an onset, timestamped in wall clock seconds.
+   *
+   * Wall clock, emphatically not the backing track's play position. An earlier
+   * version used the track position, which advances at tempo times realtime,
+   * so raising the tempo made a steady singer's onset gaps measure
+   * proportionally longer, which lowered the estimate, which pulled the tempo
+   * back. The measurement sat inside the loop it was controlling and cancelled
+   * itself out. The singer's pulse is a real-world quantity and has to be
+   * measured against a clock the correction cannot move.
+   */
+  onset(wallSeconds: number): void {
+    this.onsets.push(wallSeconds);
+    while (this.onsets.length > 0 && wallSeconds - this.onsets[0] > 8) {
       this.onsets.shift();
     }
   }
 
-  update(seconds: number, deltaSeconds: number): number {
+  update(deltaSeconds: number): number {
     if (!this.usable) return 1;
 
-    const target = this.estimate(seconds);
+    const target = this.estimate();
     return this.clamp(this.ratio.push(target ?? 1, deltaSeconds));
   }
 
-  private estimate(seconds: number): number | null {
+  private estimate(): number | null {
     if (this.onsets.length < 6) return null;
 
     const intervals: number[] = [];
@@ -218,13 +275,12 @@ export class TempoTracker {
 
     // Anything outside the correction range is a bad estimate, not a fast
     // singer. Ignore rather than clamp, so it does not bias the smoother.
-    if (Math.abs(ratio - 1) > MAX_TEMPO_DRIFT * 1.5) return null;
+    if (Math.abs(ratio - 1) > this.maxDrift * 1.5) return null;
 
-    void seconds;
     return ratio;
   }
 
   private clamp(value: number): number {
-    return Math.max(1 - MAX_TEMPO_DRIFT, Math.min(1 + MAX_TEMPO_DRIFT, value));
+    return Math.max(1 - this.maxDrift, Math.min(1 + this.maxDrift, value));
   }
 }
