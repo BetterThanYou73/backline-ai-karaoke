@@ -1,4 +1,4 @@
-# One-time setup for the Backline Inference API server.
+﻿# One-time setup for the Backline Inference API server.
 #
 #   .\setup.ps1          # base tier only, runs in STUB_MODE
 #   .\setup.ps1 -Gpu     # adds torch + audiocraft + faster-whisper (~4-5 GB)
@@ -12,11 +12,17 @@ Set-Location $PSScriptRoot
 # does not trust by default, which shows up as CERTIFICATE_VERIFY_FAILED
 # against pypi.org. Node already gets this via NODE_EXTRA_CA_CERTS; pip needs
 # to be told separately.
-$pipArgs = @()
+#
+# These go in the environment rather than on the command line because pip's
+# build isolation spawns its own pip to fetch build dependencies, and that
+# child process does not inherit a --cert flag. audiocraft builds from an
+# sdist, so it hits exactly that path.
 $nortonCert = "C:\ProgramData\Norton\Antivirus\wscert.pem"
 if (Test-Path $nortonCert) {
     Write-Host "Using local TLS-inspection certificate: $nortonCert" -ForegroundColor Cyan
-    $pipArgs += @("--cert", $nortonCert)
+    $env:PIP_CERT = $nortonCert
+    $env:SSL_CERT_FILE = $nortonCert
+    $env:REQUESTS_CA_BUNDLE = $nortonCert
 }
 
 if (-not (Test-Path ".venv")) {
@@ -26,14 +32,14 @@ if (-not (Test-Path ".venv")) {
 $python = ".venv\Scripts\python.exe"
 
 Write-Host "Installing base requirements..." -ForegroundColor Cyan
-& $python -m pip install @pipArgs -r requirements.txt
+& $python -m pip install -r requirements.txt
 
 if ($Gpu) {
     Write-Host "Installing torch (CUDA 12.1)..." -ForegroundColor Cyan
-    & $python -m pip install @pipArgs --index-url https://download.pytorch.org/whl/cu121 torch==2.1.0 torchaudio==2.1.0
+    & $python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.1.0 torchaudio==2.1.0
 
-    Write-Host "Installing audiocraft + faster-whisper..." -ForegroundColor Cyan
-    & $python -m pip install @pipArgs -r requirements-gpu.txt
+    Write-Host "Installing transformers + faster-whisper..." -ForegroundColor Cyan
+    & $python -m pip install -r requirements-gpu.txt
 
     Write-Host ""
     Write-Host "GPU tier installed. Set STUB_MODE=0 in inference\.env to use it." -ForegroundColor Green

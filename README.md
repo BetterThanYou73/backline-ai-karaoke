@@ -39,8 +39,9 @@ evicting on switch and freeing after an idle timeout.
 
 ## Stack
 
-Python, FastAPI, PyTorch, CUDA, MusicGen (audiocraft), faster-whisper, librosa,
-TypeScript, Next.js, React, Web Audio API, AudioWorklet, MediaPipe, SQLite.
+Python, FastAPI, PyTorch, CUDA, MusicGen-melody (transformers), faster-whisper,
+librosa, TypeScript, Next.js, React, Web Audio API, AudioWorklet, MediaPipe,
+SQLite.
 
 ## Architecture
 

@@ -1,17 +1,31 @@
-# Backline Inference API - GPU tier. Roughly 4-5 GB of wheels, plus another
-# ~6 GB of model weights fetched on first generation.
+# Backline Inference API - GPU tier. Roughly 2.5 GB of wheels, plus about
+# 6 GB of MusicGen-melody weights fetched on first generation.
 #
-# Install order matters. Torch must come from the CUDA index BEFORE audiocraft,
-# or pip resolves a CPU-only wheel and generation silently runs on CPU (minutes
-# per chunk instead of seconds).
+# Install order matters. Torch must come from the CUDA index BEFORE anything
+# else, or pip resolves a CPU-only wheel and generation silently runs on CPU
+# (minutes per chunk instead of seconds).
 #
 #   .venv\Scripts\Activate.ps1
 #   pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.1.0 torchaudio==2.1.0
 #   pip install -r requirements-gpu.txt
 #
-# Python 3.11 required: audiocraft's pins do not resolve on 3.12.
-#
 # Then set STUB_MODE=0 in inference/.env and restart the server.
+#
+# Why transformers and not audiocraft: audiocraft is Meta's own MusicGen
+# package, but on Windows it pulls in xformers and an `av` pin with no wheel
+# for CPython 3.11, so installing it needs a full MSVC toolchain. transformers
+# serves the same facebook/musicgen-melody weights through
+# MusicgenMelodyForConditionalGeneration with the same chroma conditioning, and
+# installs as pure Python. Swapping back to audiocraft only touches
+# app/models/melody.py.
 
-audiocraft==1.3.0
+transformers==4.44.2
+accelerate==0.34.2
+
+# CTranslate2 Whisper: about half the VRAM of openai-whisper for the same
+# checkpoint, which matters when it shares an 8 GB card with the music model.
 faster-whisper==1.0.3
+
+# Pinned below 13 because faster-whisper 1.0.3 requires it, and 12.3.0 is the
+# newest release with a prebuilt Windows wheel for CPython 3.11.
+av>=12,<13

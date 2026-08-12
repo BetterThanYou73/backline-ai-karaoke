@@ -102,29 +102,40 @@ def render_track(
 
 
 # --------------------------------------------------------------------------
-# Real path: MusicGen-melody
+# Real path: MusicGen-melody via transformers
 # --------------------------------------------------------------------------
+#
+# transformers rather than audiocraft. audiocraft pulls in xformers and an `av`
+# pin with no Windows wheel for this Python version, so it wants a full C++
+# toolchain to install. transformers ships the same MusicGen-melody weights
+# through MusicgenMelodyForConditionalGeneration as a pure-Python wheel, and
+# the conditioning path is identical: the processor extracts chroma from the
+# melody audio and the model generates against it.
+
+# MusicGen's audio codec runs at 50 frames per second, so a token count is just
+# seconds times fifty.
+TOKENS_PER_SECOND = 50
 
 
 def _load_musicgen():
     import torch
-    from audiocraft.models import MusicGen
+    from transformers import AutoProcessor, MusicgenMelodyForConditionalGeneration
 
     name = config.MODEL_PATH or config.MUSICGEN_MODEL
-    device = config.DEVICE if torch.cuda.is_available() else "cpu"
-    model = MusicGen.get_pretrained(name, device=device)
+    use_cuda = torch.cuda.is_available() and config.DEVICE.startswith("cuda")
 
-    # 1.5B params at fp32 is ~6GB of weights alone, which leaves no room for
-    # activations on an 8GB card. Half-precision weights on the language model
-    # bring it to ~3GB; the compression and chroma models stay fp32 because
-    # they are small and numerically touchier.
-    if device == "cuda":
-        try:
-            model.lm = model.lm.half()
-        except Exception:  # pragma: no cover - depends on audiocraft internals
-            pass
+    # 1.5B params at fp32 is about 6GB of weights alone, which leaves nothing
+    # for activations on an 8GB card. fp16 halves that.
+    dtype = torch.float16 if use_cuda else torch.float32
 
-    return model
+    processor = AutoProcessor.from_pretrained(name)
+    model = MusicgenMelodyForConditionalGeneration.from_pretrained(
+        name, torch_dtype=dtype
+    )
+    model = model.to("cuda" if use_cuda else "cpu")
+    model.eval()
+
+    return {"model": model, "processor": processor}
 
 
 def _musicgen_chunk(
@@ -133,33 +144,36 @@ def _musicgen_chunk(
     import torch
 
     with registry.gpu_lock:
-        model = registry.acquire("musicgen", _load_musicgen)
+        bundle = registry.acquire("musicgen", _load_musicgen)
         registry.touch()
 
-        model.set_generation_params(
-            duration=float(seconds),
-            cfg_coef=style.cfg_coef,
-            top_k=250,
-            temperature=1.0,
-        )
+        model = bundle["model"]
+        processor = bundle["processor"]
+        device = next(model.parameters()).device
+
+        inputs = processor(
+            audio=melody,
+            sampling_rate=sr,
+            text=[style.prompt],
+            padding=True,
+            return_tensors="pt",
+        ).to(device)
 
         torch.manual_seed(seed)
-        melody_tensor = torch.from_numpy(melody).float()[None, None, :]
 
         try:
             with torch.inference_mode():
-                with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=(config.DEVICE == "cuda")):
-                    output = model.generate_with_chroma(
-                        descriptions=[style.prompt],
-                        melody_wavs=melody_tensor,
-                        melody_sample_rate=sr,
-                        progress=False,
-                    )
+                output = model.generate(
+                    **inputs,
+                    do_sample=True,
+                    guidance_scale=style.cfg_coef,
+                    max_new_tokens=int(seconds * TOKENS_PER_SECOND),
+                )
         except torch.cuda.OutOfMemoryError as exc:  # pragma: no cover
             registry.unload()
             raise RuntimeError(
                 "CUDA out of memory during generation. On an 8GB card try "
-                "lowering CHUNK_SECONDS (e.g. 15) in inference/.env, or set "
+                "lowering CHUNK_SECONDS to 15 in inference/.env, or set "
                 "DEVICE=cpu to trade speed for headroom."
             ) from exc
 
