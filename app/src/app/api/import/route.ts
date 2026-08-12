@@ -48,24 +48,42 @@ export async function POST(request: Request) {
 
   // Keep the user's name so the library reads sensibly, but strip anything
   // that could escape the imports folder or confuse the scanner.
-  const safeName = path
-    .basename(file.name)
-    .replace(/[^\w\s.-]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  const stamped = `${Date.now().toString(36)} - ${safeName || `import${extension}`}`;
-  const destination = path.join(IMPORTS_DIR, stamped);
+  const safeName =
+    path
+      .basename(file.name)
+      .replace(/[^\w\s.-]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim() || `import${extension}`;
 
-  await fsp.writeFile(destination, Buffer.from(await file.arrayBuffer()));
+  // An earlier version prefixed a timestamp to guarantee uniqueness, which put
+  // "mgk1frl - " in front of every import. The library reads "Artist - Title"
+  // off the file name, so every imported song ended up by an artist called
+  // something like mgk1frl. Only disambiguate when there is a real collision,
+  // and do it with a suffix, where the parser will not see it as a name.
+  const stem = path.basename(safeName, extension);
+  let fileName = safeName;
+  for (let attempt = 2; attempt < 500; attempt++) {
+    try {
+      await fsp.access(path.join(IMPORTS_DIR, fileName));
+      fileName = `${stem} (${attempt})${extension}`;
+    } catch {
+      break;
+    }
+  }
+
+  await fsp.writeFile(
+    path.join(IMPORTS_DIR, fileName),
+    Buffer.from(await file.arrayBuffer()),
+  );
 
   const songs = await scanLibrary();
-  const created = songs.find((song) => song.file === stamped);
+  const created = songs.find((song) => song.file === fileName);
 
   // Analysis runs in the background; the client polls the song list for bpm.
   void runAnalysisQueue();
 
   return NextResponse.json({
     songId: created?.id ?? null,
-    file: stamped,
+    file: fileName,
   });
 }

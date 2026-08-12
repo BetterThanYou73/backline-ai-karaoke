@@ -122,6 +122,36 @@ export function saveTrack(input: {
   return saved;
 }
 
+/**
+ * Drop index entries for songs that no longer exist, and report the files they
+ * pointed at so the caller can delete them.
+ *
+ * Without this, deleting a song leaves its renders on disk forever. At 1.2 MB
+ * per 20 seconds that adds up quietly, and nothing else would ever notice.
+ */
+export function pruneOrphanedTracks(validSongIds: Set<string>): string[] {
+  const rows = connect()
+    .prepare("SELECT song_id, style, file FROM generated_track")
+    .all() as Pick<TrackRow, "song_id" | "style" | "file">[];
+
+  const orphans = rows.filter((row) => !validSongIds.has(row.song_id));
+  if (orphans.length === 0) return [];
+
+  const remove = connect().prepare(
+    "DELETE FROM generated_track WHERE song_id = ? AND style = ?",
+  );
+  const removeLyrics = connect().prepare(
+    "DELETE FROM lyrics_cache WHERE song_id = ?",
+  );
+
+  for (const orphan of orphans) {
+    remove.run(orphan.song_id, orphan.style);
+    removeLyrics.run(orphan.song_id);
+  }
+
+  return orphans.map((orphan) => orphan.file);
+}
+
 export function getCachedLyrics<T>(songId: string): T | null {
   const row = connect()
     .prepare("SELECT payload FROM lyrics_cache WHERE song_id = ?")

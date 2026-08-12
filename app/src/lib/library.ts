@@ -3,7 +3,8 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
-import { AUDIO_EXTENSIONS, IMPORTS_DIR, SONGS_DIR, SONGS_INDEX } from "./config";
+import { AUDIO_EXTENSIONS, CACHE_DIR, IMPORTS_DIR, SONGS_DIR, SONGS_INDEX } from "./config";
+import { pruneOrphanedTracks } from "./db";
 import * as inference from "./inference";
 import type { LyricLine, Song } from "./types";
 
@@ -17,6 +18,8 @@ import type { LyricLine, Song } from "./types";
 export interface SongRecord extends Song {
   /** Absolute path on this machine, never sent to the browser. */
   absolutePath: string;
+  /** Size and mtime. A change here means re-analyse, but keep the id. */
+  fingerprint: string;
   /** Downsampled reference f0 track, [seconds, midi | null][]. */
   melodyContour: [number, number | null][];
   analyzed: boolean;
@@ -26,35 +29,88 @@ export interface SongRecord extends Song {
 type Index = Record<string, SongRecord>;
 
 let indexCache: Index | null = null;
+let indexCacheMtime = 0;
 let analysing = false;
 
+/**
+ * Read the song index, reloading whenever songs.json has changed on disk.
+ *
+ * The mtime check is not an optimisation, it is the whole point. Next runs
+ * route handlers and server components as separate module instances, so this
+ * module exists more than once in one process, each copy with its own cache.
+ * An earlier version cached the parsed index forever: the API route's scan
+ * updated its own copy and the file, while the page's copy kept serving the
+ * snapshot it read at startup, and every song added afterwards 404ed on the
+ * style and perform pages while listing correctly in the library.
+ *
+ * Disk is the shared source of truth between those instances, so the cache has
+ * to be validated against it rather than trusted.
+ */
 function readIndex(): Index {
-  if (indexCache) return indexCache;
+  let mtime = 0;
   try {
-    const raw = fs.readFileSync(SONGS_INDEX, "utf8");
-    indexCache = JSON.parse(raw) as Index;
+    mtime = fs.statSync(SONGS_INDEX).mtimeMs;
   } catch {
-    indexCache = {};
+    // No index yet. An empty result is correct, and it must not be cached as
+    // though it were authoritative.
+    indexCache = null;
+    indexCacheMtime = 0;
+    return {};
   }
+
+  if (indexCache && mtime === indexCacheMtime) return indexCache;
+
+  try {
+    indexCache = JSON.parse(fs.readFileSync(SONGS_INDEX, "utf8")) as Index;
+    indexCacheMtime = mtime;
+  } catch {
+    // Corrupt or mid-write. Serve what we last had rather than pretending the
+    // library is empty, and retry on the next call.
+    return indexCache ?? {};
+  }
+
   return indexCache;
 }
 
 function writeIndex(index: Index): void {
-  indexCache = index;
   fs.mkdirSync(path.dirname(SONGS_INDEX), { recursive: true });
   // Write then rename: a crash mid-write must not leave a truncated index.
   const temporary = `${SONGS_INDEX}.tmp`;
   fs.writeFileSync(temporary, JSON.stringify(index, null, 2), "utf8");
   fs.renameSync(temporary, SONGS_INDEX);
+
+  indexCache = index;
+  try {
+    indexCacheMtime = fs.statSync(SONGS_INDEX).mtimeMs;
+  } catch {
+    indexCacheMtime = 0;
+  }
 }
 
-/** Stable id from file identity rather than name, so renames keep the cache. */
-function songId(file: string, size: number, mtimeMs: number): string {
-  const digest = crypto
+/**
+ * Song id, derived from the file name alone.
+ *
+ * Size and mtime used to be in here, which meant re-copying a file, editing
+ * its tags, or a backup tool touching it all produced a different id. Every
+ * link to the old id died, and the expensive thing keyed by it, the generated
+ * tracks, was orphaned. The name is the stable part of a song's identity from
+ * a user's point of view, so that is what the id follows.
+ */
+function songId(file: string): string {
+  return crypto
     .createHash("sha1")
-    .update(`${path.basename(file).toLowerCase()}:${size}:${Math.round(mtimeMs)}`)
-    .digest("hex");
-  return digest.slice(0, 12);
+    .update(path.basename(file).toLowerCase())
+    .digest("hex")
+    .slice(0, 12);
+}
+
+/**
+ * Changes when the bytes might have changed, which is the signal to re-analyse.
+ * Kept separate from identity so a re-analysis does not also invalidate every
+ * rendered track for that song.
+ */
+function fingerprint(size: number, mtimeMs: number): string {
+  return `${size}:${Math.round(mtimeMs)}`;
 }
 
 function titleFromFilename(file: string): { title: string; artist: string } {
@@ -107,16 +163,22 @@ async function scanDirectory(
 
     const absolutePath = path.join(directory, entry.name);
     const stat = await fsp.stat(absolutePath);
-    const id = songId(entry.name, stat.size, stat.mtimeMs);
+
+    // A file still being copied in shows up as a partial. Picking it up here
+    // would analyse a truncated stream and cache the wrong bpm, so skip it and
+    // let the next scan take it.
+    if (stat.size < 1024) continue;
+
     const { title, artist } = titleFromFilename(entry.name);
 
     found.push({
-      id,
+      id: songId(entry.name),
       title,
       artist,
       source,
       file: entry.name,
       absolutePath,
+      fingerprint: fingerprint(stat.size, stat.mtimeMs),
       duration: 0,
       bpm: null,
       key: null,
@@ -143,23 +205,47 @@ export async function scanLibrary(): Promise<SongRecord[]> {
   const next: Index = {};
   for (const song of discovered) {
     const existing = index[song.id];
-    next[song.id] = existing
-      ? {
-          ...existing,
-          // Path and name can move; analysis results are what we are keeping.
-          absolutePath: song.absolutePath,
-          file: song.file,
-          title: existing.title || song.title,
-          artist: existing.artist || song.artist,
-          source: song.source,
-          lyrics: song.lyrics.length ? song.lyrics : existing.lyrics,
-        }
-      : song;
+
+    if (!existing) {
+      next[song.id] = song;
+      continue;
+    }
+
+    // The bytes changed underneath us, so cached tempo, key and melody are
+    // describing audio that is no longer there. Keep the id, drop the analysis.
+    if (existing.fingerprint !== song.fingerprint) {
+      next[song.id] = song;
+      continue;
+    }
+
+    next[song.id] = {
+      ...existing,
+      // Path can move between scans; the analysis is what we are keeping.
+      absolutePath: song.absolutePath,
+      file: song.file,
+      source: song.source,
+      lyrics: song.lyrics.length ? song.lyrics : existing.lyrics,
+    };
   }
 
   writeIndex(next);
+  void pruneCache(new Set(Object.keys(next)));
   void runAnalysisQueue();
   return Object.values(next).sort((a, b) => a.title.localeCompare(b.title));
+}
+
+/** Delete renders belonging to songs that are no longer in the library. */
+async function pruneCache(validSongIds: Set<string>): Promise<void> {
+  try {
+    const orphaned = pruneOrphanedTracks(validSongIds);
+    await Promise.all(
+      orphaned.map((file) =>
+        fsp.rm(path.join(CACHE_DIR, file), { force: true }).catch(() => undefined),
+      ),
+    );
+  } catch {
+    // Pruning is housekeeping. A failure here must never take out a scan.
+  }
 }
 
 export async function listSongs(): Promise<SongRecord[]> {

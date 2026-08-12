@@ -37,6 +37,11 @@ export const SONGS_INDEX = resolveFromApp(
   process.env.SONGS_INDEX ?? "./data/songs.json",
 );
 
+/** Runtime settings the user can change from the app. */
+export const SETTINGS_PATH = resolveFromApp(
+  process.env.SETTINGS_PATH ?? "./data/settings.json",
+);
+
 export const DB_PATH = path.join(CACHE_DIR, "backline.db");
 
 export const AUDIO_EXTENSIONS = new Set([

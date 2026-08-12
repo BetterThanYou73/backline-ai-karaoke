@@ -86,7 +86,11 @@ async function call<T>(
 }
 
 export function health(): Promise<InferenceHealth> {
-  return call<InferenceHealth>("/health", { method: "GET" }, 5_000);
+  // Generous for a health check, because the inference server is single
+  // threaded through CPU-heavy analysis. A 5 second timeout here reported the
+  // server as unreachable whenever it happened to be analysing a song, which
+  // is both wrong and alarming.
+  return call<InferenceHealth>("/health", { method: "GET" }, 20_000);
 }
 
 /**
@@ -105,6 +109,7 @@ export function generate(input: {
   audioPath: string;
   style: StyleId;
   songId: string;
+  maxRenderSeconds?: number;
 }): Promise<{ job_id: string }> {
   return call<{ job_id: string }>(
     "/generate",
@@ -114,6 +119,11 @@ export function generate(input: {
         audio_path: input.audioPath,
         style: input.style,
         song_id: input.songId,
+        // Omitted rather than sent as 0, because the server reads a missing
+        // value as "use your configured default" and 0 as "whole song".
+        ...(input.maxRenderSeconds !== undefined
+          ? { max_render_seconds: input.maxRenderSeconds }
+          : {}),
       }),
     },
     30_000,

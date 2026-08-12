@@ -23,12 +23,25 @@ export function HealthBanner() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/health")
-      .then((response) => response.json())
-      .then((data: Health) => {
-        if (!cancelled) setHealth(data);
-      })
-      .catch(() => undefined);
+
+    // Retry once before declaring the server down. The first check often lands
+    // while it is busy analysing a newly added song, and a red banner that
+    // clears itself on refresh is worse than no banner.
+    async function probe(attempt = 0): Promise<void> {
+      try {
+        const data: Health = await (await fetch("/api/health")).json();
+        if (cancelled) return;
+        if (!data.inference && attempt < 1) {
+          setTimeout(() => void probe(attempt + 1), 4000);
+          return;
+        }
+        setHealth(data);
+      } catch {
+        // Leave the banner hidden rather than guess.
+      }
+    }
+
+    void probe();
     return () => {
       cancelled = true;
     };
