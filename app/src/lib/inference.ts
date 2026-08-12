@@ -127,6 +127,8 @@ export function status(jobId: string): Promise<JobStatus> {
 export function transcribe(audioPath: string): Promise<{
   lyrics: LyricLine[];
   language: string | null;
+  /** True when these are stub placeholders rather than a real transcription. */
+  stub: boolean;
 }> {
   return call("/transcribe", {
     method: "POST",

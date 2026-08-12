@@ -50,7 +50,11 @@ def transcribe_file(path: Path) -> dict:
             if segment.text and segment.text.strip()
         ]
 
-    return {"lyrics": lyrics, "language": getattr(info, "language", None)}
+    return {
+        "lyrics": lyrics,
+        "language": getattr(info, "language", None),
+        "stub": False,
+    }
 
 
 def _stub_lyrics(path: Path) -> dict:
@@ -83,4 +87,5 @@ def _stub_lyrics(path: Path) -> dict:
             for index, text in enumerate(lines)
         ],
         "language": "en",
+        "stub": True,
     }

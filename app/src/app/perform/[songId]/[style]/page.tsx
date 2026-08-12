@@ -3,38 +3,17 @@ import { notFound } from "next/navigation";
 
 import { Masthead } from "@/components/Masthead";
 import { PerformanceStage } from "@/components/PerformanceStage";
-import { getCachedLyrics, putCachedLyrics } from "@/lib/db";
-import * as inference from "@/lib/inference";
 import { getSong } from "@/lib/library";
+import { resolveLyrics } from "@/lib/lyrics";
 import { STYLES, isStyleId } from "@/lib/styles";
-import type { LyricLine } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Screen four. Resolves lyrics server side so the client starts with them in
+ * Screen four. Lyrics resolve server side so the client starts with them in
  * hand: a transcription request in the middle of loading a performance would
  * be the one network call the spec says must not happen near a take.
  */
-async function resolveLyrics(
-  songId: string,
-  bundled: LyricLine[],
-  audioPath: string,
-): Promise<LyricLine[]> {
-  if (bundled.length > 0) return bundled;
-
-  const cached = getCachedLyrics<LyricLine[]>(songId);
-  if (cached) return cached;
-
-  try {
-    const result = await inference.transcribe(audioPath);
-    putCachedLyrics(songId, result.lyrics);
-    return result.lyrics;
-  } catch {
-    return [];
-  }
-}
-
 export default async function PerformPage({
   params,
 }: {
@@ -47,7 +26,7 @@ export default async function PerformPage({
   if (!song) notFound();
 
   const skin = STYLES[style];
-  const lyrics = await resolveLyrics(song.id, song.lyrics, song.absolutePath);
+  const lyrics = await resolveLyrics(song);
 
   return (
     <main className="shell stage-shell">

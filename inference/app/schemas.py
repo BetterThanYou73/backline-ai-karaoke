@@ -75,6 +75,10 @@ class LyricLine(BaseModel):
 class TranscribeResponse(BaseModel):
     lyrics: list[LyricLine]
     language: Optional[str] = None
+    # True when these are placeholder lines from STUB_MODE rather than a real
+    # transcription. The App Server refuses to cache those, so turning stub
+    # mode off does not leave placeholder lyrics stuck in the cache forever.
+    stub: bool = False
 
 
 class HealthResponse(BaseModel):
