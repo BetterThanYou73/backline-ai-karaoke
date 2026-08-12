@@ -4,16 +4,22 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { BacklineCrew } from "@/components/BacklineCrew";
+import { SkinProvider } from "@/components/SkinProvider";
 import { STYLES, STYLE_IDS } from "@/lib/styles";
 import type { StyleId } from "@/lib/types";
 
 /**
  * Screen two. Each card previews the skin it will put on stage, so the choice
  * is made on the look as much as the genre name.
+ *
+ * Hovering a card repaints the whole page in that skin. It costs nothing and
+ * it turns picking a style from reading a list into looking around a room,
+ * which is the difference between six options and six places.
  */
 export function StylePicker({ songId }: { songId: string }) {
   const router = useRouter();
   const [chosen, setChosen] = useState<StyleId | null>(null);
+  const [previewing, setPreviewing] = useState<StyleId | null>(null);
   const [time, setTime] = useState(0);
 
   // One shared clock for every preview, rather than six independent loops.
@@ -28,16 +34,25 @@ export function StylePicker({ songId }: { songId: string }) {
     return () => cancelAnimationFrame(frame);
   }, []);
 
+  const active = chosen ?? previewing;
+
   return (
-    <ul className="style-grid">
+    <>
+      <SkinProvider skin={active ? STYLES[active] : null} />
+      <ul
+        className="style-grid"
+        onMouseLeave={() => setPreviewing(null)}
+      >
       {STYLE_IDS.map((id, index) => {
         const skin = STYLES[id];
         return (
           <li key={id}>
             <button
-              className="style-card"
+              className={active === id ? "style-card active" : "style-card"}
               disabled={chosen !== null}
-              style={{ borderColor: chosen === id ? skin.accent : undefined }}
+              style={{ borderColor: active === id ? skin.accent : undefined }}
+              onMouseEnter={() => setPreviewing(id)}
+              onFocus={() => setPreviewing(id)}
               onClick={() => {
                 setChosen(id);
                 router.push(`/perform/${songId}/${id}`);
@@ -66,6 +81,7 @@ export function StylePicker({ songId }: { songId: string }) {
           </li>
         );
       })}
-    </ul>
+      </ul>
+    </>
   );
 }

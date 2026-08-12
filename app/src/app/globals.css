@@ -11,6 +11,11 @@
   --bad: #ff6b6b;
   --radius: 14px;
   --shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+
+  /* Overridden per style once a skin is chosen, so a screen actually sits
+     inside the world it is about rather than staying uniformly grey. */
+  --stage-near: #1b0736;
+  --stage-far: #08111f;
 }
 
 * {
@@ -27,6 +32,70 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   min-height: 100%;
+}
+
+/**
+ * Room light.
+ *
+ * Two slow, offset radial washes in the skin's colours, fixed to the viewport
+ * so they read as light in a room rather than as decoration on a page. Very
+ * low opacity on purpose: the effect should be noticed only if you look for
+ * it, and text has to stay readable over it.
+ */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      70% 55% at 15% 0%,
+      color-mix(in srgb, var(--stage-near) 70%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      60% 50% at 100% 15%,
+      color-mix(in srgb, var(--stage-far) 60%, transparent),
+      transparent 65%
+    );
+  opacity: 0.75;
+  transition: background 0.6s ease;
+}
+
+/* A slow drifting sheen over the wash, so a still screen is not dead still.
+   Twenty seconds per cycle: below the threshold where motion draws the eye. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(
+    38% 32% at 50% 50%,
+    color-mix(in srgb, var(--accent) 13%, transparent),
+    transparent 70%
+  );
+  animation: drift 20s ease-in-out infinite alternate;
+}
+
+@keyframes drift {
+  from {
+    transform: translate3d(-8%, -4%, 0) scale(1);
+  }
+  to {
+    transform: translate3d(8%, 6%, 0) scale(1.18);
+  }
+}
+
+/* Opt out of the ambient layer entirely. Set by the calm visuals setting and
+   honoured alongside the OS preference. */
+body[data-calm="true"]::after {
+  display: none;
+}
+
+body[data-calm="true"]::before {
+  opacity: 0.4;
 }
 
 a {
@@ -55,6 +124,17 @@ button:disabled {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+
+  body::after {
+    display: none;
+  }
+}
+
+body[data-calm="true"] *,
+body[data-calm="true"] *::before,
+body[data-calm="true"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
 }
 
 .shell {
@@ -65,11 +145,201 @@ button:disabled {
 
 .masthead {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.3s ease;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  transform: rotate(45deg);
+}
+
+/* --- settings sheet --- */
+
+.sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(4, 2, 8, 0.72);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 6vh 20px 20px;
+  overflow-y: auto;
+  animation: fade-in 0.18s ease;
+}
+
+.sheet {
+  width: min(560px, 100%);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  animation: rise 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+}
+
+.sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet-body {
+  padding: 6px 22px 4px;
+}
+
+.sheet-foot {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding-bottom: 16px;
+}
+
+.setting {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.setting:last-of-type {
+  border-bottom: none;
+}
+
+.setting-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 300px;
+}
+
+.setting-label span {
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  max-width: 210px;
+}
+
+.chip {
+  border: 1px solid var(--line);
+  background: var(--bg-sunk);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  transition: all 0.15s ease;
+}
+
+.chip:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #12040e;
+  font-weight: 600;
+}
+
+.toggle {
+  flex-shrink: 0;
+  width: 48px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg-sunk);
+  padding: 0;
+  position: relative;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.toggle.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 0.18s cubic-bezier(0.3, 1.4, 0.5, 1), background 0.18s ease;
+}
+
+.toggle.on .toggle-knob {
+  transform: translateX(20px);
+  background: #12040e;
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.slider-row input[type="range"] {
+  width: 130px;
+  accent-color: var(--accent);
+}
+
+@media (max-width: 560px) {
+  .setting {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chip-row {
+    max-width: none;
+    justify-content: flex-start;
+  }
 }
 
 .wordmark {
@@ -252,8 +522,29 @@ button:disabled {
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
-.style-card:hover:not(:disabled) {
-  transform: translateY(-2px);
+.style-card:hover:not(:disabled),
+.style-card:focus-visible {
+  transform: translateY(-3px);
+}
+
+/* The hovered card lifts out of the grid while the others recede, so the page
+   reads as one card being looked at rather than six competing. */
+.style-grid:hover .style-card:not(.active) {
+  opacity: 0.55;
+  filter: saturate(0.7);
+}
+
+.style-card {
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease,
+    opacity 0.25s ease,
+    filter 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.style-card.active {
+  box-shadow: 0 12px 40px -12px currentColor;
 }
 
 .style-card-art {

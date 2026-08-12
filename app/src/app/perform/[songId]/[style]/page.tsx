@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { Masthead } from "@/components/Masthead";
 import { PerformanceStage } from "@/components/PerformanceStage";
+import { SkinProvider } from "@/components/SkinProvider";
 import { getSong } from "@/lib/library";
 import { resolveLyrics } from "@/lib/lyrics";
 import { STYLES, isStyleId } from "@/lib/styles";
@@ -30,6 +31,7 @@ export default async function PerformPage({
 
   return (
     <main className="shell stage-shell">
+      <SkinProvider skin={skin} />
       <Masthead tagline={`${song.title}, with ${skin.label}`} />
 
       <div className="stage-bar">
