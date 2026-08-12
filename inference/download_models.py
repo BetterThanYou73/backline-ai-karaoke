@@ -14,6 +14,7 @@ spent. Run it again and it picks up where it stopped.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import sys
 import time
@@ -22,6 +23,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from app import config  # noqa: E402
+
+# Unbuffered, so progress is visible when stdout is a pipe or a log file rather
+# than a terminal. Without this a long download looks like a hung process.
+print = functools.partial(print, flush=True)  # noqa: A001
 
 
 def _apply_local_ca() -> None:

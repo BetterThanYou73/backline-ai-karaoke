@@ -83,11 +83,18 @@ For real generation:
 
 ```powershell
 cd inference
-.\setup.ps1 -Gpu   # torch cu121, audiocraft, faster-whisper
+.\setup.ps1 -Gpu
 ```
 
-Then set `STUB_MODE=0` in `inference/.env` and restart. First generation
-downloads the model weights.
+Then pull the weights before you need them, rather than during a demo:
+
+```powershell
+.venv\Scripts\python.exe download_models.py
+```
+
+MusicGen-melody is about 6 GB. Downloads resume, so an interrupted run costs
+only the time already spent. Once it finishes, set `STUB_MODE=0` in
+`inference/.env` and restart the server.
 
 ### App server
 
@@ -97,7 +104,38 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000. Needs Node 22.5 or newer for the built-in
+`node:sqlite` module.
+
+### Checking the audio path
+
+```
+http://localhost:3000/dev/dsp
+```
+
+Drives both worklets with synthetic signals of known pitch inside an
+`OfflineAudioContext` and reports the measured result against the expected one.
+It renders faster than real time and needs no microphone, no output device and
+no permissions, so it runs anywhere the app builds.
+
+This exists because the audio path is the part most likely to be quietly wrong
+and the hardest to check by ear: a pitch shift three percent off still sounds
+like music. It caught two real bugs on its first run. Current state is seven of
+seven, every measurement within a cent of target:
+
+| Test                              | Expected | Measured             |
+| --------------------------------- | -------- | -------------------- |
+| YIN detects 220 Hz                | 220 Hz   | 220.0 Hz, +0.1 cents |
+| YIN detects 440 Hz                | 440 Hz   | 440.2 Hz, +0.8 cents |
+| Shift up 2 semitones              | 493.9 Hz | 494.0 Hz, +0.4 cents |
+| Shift down 2 semitones            | 392.0 Hz | 391.9 Hz, -0.3 cents |
+| Speed up 15 percent, pitch held   | 440 Hz   | 440.0 Hz, -0.1 cents |
+| Slow down 15 percent, pitch held  | 440 Hz   | 440.1 Hz, +0.4 cents |
+| Unity passthrough                 | 440 Hz   | 440.0 Hz, +0.1 cents |
+
+The two tempo rows are the ones that matter most: they change speed by 15
+percent while pitch stays put, which is exactly what a broken time-stretch
+cannot do.
 
 ### Adding songs
 

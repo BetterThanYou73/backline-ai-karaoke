@@ -234,3 +234,24 @@ guaranteed.
 synth renderer so the entire application runs before the multi gigabyte model
 install, which makes the build order in section 9 practical to follow out of
 order.
+
+**Generation backend.** Section 5 names audiocraft. On Windows audiocraft pins
+an `av` version with no CPython 3.11 wheel and pulls in xformers, so installing
+it needs a full MSVC toolchain. The implementation uses the same
+facebook/musicgen-melody weights through the transformers implementation, which
+has the same chroma conditioning and installs as pure Python. Switching back
+touches one file.
+
+**Time-stretch algorithm.** Section 7 specifies a phase vocoder. The
+implementation uses WSOLA feeding an interpolating resampler instead. Given
+section 3.3 bounds corrections to about two semitones and fifteen percent,
+WSOLA is cheaper in that range, does not smear transients, and needs no FFT on
+the render thread. Measured accuracy is within a cent of target on both axes,
+see the test bench at /dev/dsp.
+
+**Cache index.** Section 6 offers SQLite or a flat JSON index. Both are used:
+SQLite for generated tracks, because the miss path interleaves reads and writes
+with a poll loop and a whole-file rewrite would race with itself, and JSON for
+song metadata, which is written once per song by a background pass. The SQLite
+binding is Node's built-in `node:sqlite` rather than better-sqlite3, so cloning
+this repo does not require a C++ toolchain.
