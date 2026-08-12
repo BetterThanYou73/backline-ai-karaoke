@@ -32,3 +32,6 @@ app/data/imports/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Sample renders, regenerated on demand
+samples/
