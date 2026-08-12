@@ -32,8 +32,9 @@ class GenerateRequest(AudioSource):
     # Echoed back on the job so the App Server can key its cache without
     # tracking the job id across a restart.
     song_id: Optional[str] = None
-    # Overrides config defaults; the App Server leaves these unset normally.
-    max_render_seconds: Optional[float] = Field(default=None, ge=5, le=600)
+    # Overrides the server's configured default. 0 means render the whole song;
+    # omitted means fall back to MAX_RENDER_SECONDS.
+    max_render_seconds: Optional[float] = Field(default=None, ge=0, le=1800)
     seed: Optional[int] = None
 
     @model_validator(mode="after")

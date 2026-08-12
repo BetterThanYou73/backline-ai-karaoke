@@ -6,6 +6,7 @@ import { CACHE_DIR } from "./config";
 import { findTrack, saveTrack } from "./db";
 import * as inference from "./inference";
 import { getSong } from "./library";
+import { getSettings } from "./settings";
 import type { StyleId, TrackJob } from "./types";
 
 /**
@@ -44,14 +45,22 @@ export async function requestTrack(
     return { state: "pending", jobId: existingJob, progress: 0 };
   }
 
+  const settings = getSettings();
+
   try {
     const { job_id } = await inference.generate({
       audioPath: song.absolutePath,
       style,
       songId,
+      maxRenderSeconds: settings.maxRenderSeconds,
     });
     inFlight.set(key, job_id);
-    return { state: "pending", jobId: job_id, progress: 0, etaSeconds: await estimateEta() };
+    return {
+      state: "pending",
+      jobId: job_id,
+      progress: 0,
+      etaSeconds: await estimateEta(settings.maxRenderSeconds, song.duration),
+    };
   } catch (error) {
     return {
       state: "error",
@@ -140,13 +149,29 @@ async function ingest(
   });
 }
 
-/** Rough wall clock for the loading screen. Stub renders are near instant. */
-async function estimateEta(): Promise<number> {
+/**
+ * Rough wall clock for the loading screen.
+ *
+ * Scaled by how much audio is actually being rendered rather than a flat
+ * guess, since the whole point of the render length setting is that a person
+ * can ask for anything from twenty seconds to a full song. Measured on an
+ * RTX 4070 laptop at fp16: roughly 1.8 seconds of wall clock per second of
+ * audio.
+ */
+async function estimateEta(
+  maxRenderSeconds: number,
+  songDuration: number,
+): Promise<number> {
+  const seconds =
+    maxRenderSeconds > 0
+      ? Math.min(maxRenderSeconds, songDuration || maxRenderSeconds)
+      : songDuration || 180;
+
   try {
     const status = await inference.health();
-    if (status.stub_mode) return 3;
-    return status.cuda_available ? 60 : 600;
+    if (status.stub_mode) return Math.max(2, Math.round(seconds * 0.05));
+    return Math.round(seconds * (status.cuda_available ? 1.8 : 25));
   } catch {
-    return 60;
+    return Math.round(seconds * 1.8);
   }
 }
