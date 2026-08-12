@@ -90,26 +90,26 @@ export class PerformanceEngine {
     }
     const decoded = await context.decodeAudioData(await response.arrayBuffer());
 
-    this.stretch = new AudioWorkletNode(context, "adaptive-stretch", {
-      numberOfInputs: 0,
-      numberOfOutputs: 1,
-      outputChannelCount: [2],
-    });
-
     const channels: ArrayBuffer[] = [];
     for (let c = 0; c < decoded.numberOfChannels; c++) {
-      // copyToChannel-style copy, then transfer: moving the buffers rather
-      // than structured-cloning them keeps a multi-megabyte track from being
-      // duplicated in memory.
       const copy = new Float32Array(decoded.length);
       decoded.copyFromChannel(copy, c);
       channels.push(copy.buffer);
     }
 
-    this.stretch.port.postMessage(
-      { type: "load", channels, sampleRate: decoded.sampleRate },
-      channels,
-    );
+    // The track goes in through processorOptions rather than a postMessage
+    // after construction. Both work in a realtime context, but this way the
+    // processor is never briefly alive without its audio, so there is no
+    // window in which it could be asked to play and output silence.
+    this.stretch = new AudioWorkletNode(context, "adaptive-stretch", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: {
+        channels,
+        sampleRate: decoded.sampleRate,
+      },
+    });
 
     this.stretch.port.onmessage = (event) => {
       const data = event.data;

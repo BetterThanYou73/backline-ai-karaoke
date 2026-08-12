@@ -25,11 +25,21 @@
  * cheaper, has no transient smearing, and does not need an FFT on the render
  * thread.
  *
+ * Hann windows at 50 percent overlap sum to unity, so overlap-add preserves
+ * amplitude without a normalisation pass.
+ *
+ * Configuration arrives either through processorOptions at construction or
+ * through messages afterwards. Prefer processorOptions when the audio is known
+ * up front: in an OfflineAudioContext the whole render can finish before a
+ * postMessage is ever delivered to the processor, and the node would output
+ * silence.
+ *
  * Messages in:
- *   { type: "load", channels: Float32Array[], sampleRate }
+ *   { type: "load", channels: ArrayBuffer[], sampleRate }
  *   { type: "params", tempo, pitch }   ratios, 1 = unchanged
  *   { type: "transport", playing, seek }
  * Messages out:
+ *   { type: "loaded", duration }
  *   { type: "position", seconds }      about 20 Hz
  *   { type: "ended" }
  */
@@ -37,6 +47,7 @@
 const FRAME = 1024;
 const SYNTHESIS_HOP = FRAME >> 1; // 50 percent overlap
 const SEARCH = 256; // how far WSOLA may slide to find a better splice
+const CAPACITY = FRAME * 8;
 const POSITION_INTERVAL = 2400; // samples between position messages
 
 function hann(size) {
@@ -48,58 +59,82 @@ function hann(size) {
 }
 
 class StretchProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
+
+    this.window = hann(FRAME);
 
     this.channels = null;
     this.channelCount = 0;
     this.sourceRate = sampleRate;
     this.sourceLength = 0;
 
-    this.window = hann(FRAME);
-
     this.playing = false;
     this.ended = false;
-
-    // Stage one state.
-    this.readPosition = 0; // float index into the source
-    this.olaBuffers = null; // accumulated WSOLA output per channel
-    this.olaLength = 0; // valid samples in olaBuffers
-    this.olaRead = 0; // how much of that stage two has consumed
-    // The tail of the previous synthesis frame, used as the template the next
-    // frame is matched against.
-    this.template = null;
-
-    // Stage two state.
-    this.resamplePosition = 0;
 
     this.tempo = 1;
     this.pitch = 1;
 
+    this.readPosition = 0; // float index into the source
+    this.olaBuffers = null;
+    this.writePosition = 0; // where the next frame is overlap-added
+    this.clearedTo = 0; // how far the OLA buffers have been zeroed
+    this.template = null; // tail of the last frame, matched against next
+    this.hasTemplate = false;
+    this.resamplePosition = 0;
+
     this.samplesSincePosition = 0;
 
+    const initial = options && options.processorOptions;
+    if (initial) {
+      if (initial.channels) this.load(initial);
+      if (typeof initial.tempo === "number") this.tempo = initial.tempo;
+      if (typeof initial.pitch === "number") this.pitch = initial.pitch;
+      if (initial.playing) this.playing = true;
+    }
+
     this.port.onmessage = (event) => this.handle(event.data);
+  }
+
+  load(message) {
+    this.channels = message.channels.map((buffer) => new Float32Array(buffer));
+    this.channelCount = this.channels.length;
+    this.sourceRate = message.sampleRate || sampleRate;
+    this.sourceLength = this.channels[0] ? this.channels[0].length : 0;
+
+    this.olaBuffers = this.channels.map(() => new Float32Array(CAPACITY));
+    this.template = this.channels.map(() => new Float32Array(SYNTHESIS_HOP));
+
+    this.seek(0);
+    this.port.postMessage({
+      type: "loaded",
+      duration: this.sourceLength / this.sourceRate,
+    });
+  }
+
+  seek(seconds) {
+    this.readPosition = Math.max(
+      0,
+      Math.min(Math.max(0, this.sourceLength - 1), seconds * this.sourceRate),
+    );
+    this.writePosition = 0;
+    this.clearedTo = 0;
+    this.resamplePosition = 0;
+    this.hasTemplate = false;
+    this.ended = false;
+    if (this.olaBuffers) {
+      for (const buffer of this.olaBuffers) buffer.fill(0);
+    }
+    if (this.template) {
+      for (const channel of this.template) channel.fill(0);
+    }
   }
 
   handle(message) {
     if (!message) return;
 
     if (message.type === "load") {
-      this.channels = message.channels.map((buffer) => new Float32Array(buffer));
-      this.channelCount = this.channels.length;
-      this.sourceRate = message.sampleRate || sampleRate;
-      this.sourceLength = this.channels[0] ? this.channels[0].length : 0;
-
-      const capacity = FRAME * 8;
-      this.olaBuffers = this.channels.map(() => new Float32Array(capacity));
-      this.template = this.channels.map(() => new Float32Array(SYNTHESIS_HOP));
-
-      this.readPosition = 0;
-      this.olaLength = 0;
-      this.olaRead = 0;
-      this.resamplePosition = 0;
-      this.ended = false;
-      this.port.postMessage({ type: "loaded", duration: this.sourceLength / this.sourceRate });
+      this.load(message);
       return;
     }
 
@@ -114,20 +149,8 @@ class StretchProcessor extends AudioWorkletProcessor {
     }
 
     if (message.type === "transport") {
+      if (typeof message.seek === "number") this.seek(message.seek);
       if (typeof message.playing === "boolean") this.playing = message.playing;
-      if (typeof message.seek === "number") {
-        this.readPosition = Math.max(
-          0,
-          Math.min(this.sourceLength - 1, message.seek * this.sourceRate),
-        );
-        this.olaLength = 0;
-        this.olaRead = 0;
-        this.resamplePosition = 0;
-        this.ended = false;
-        if (this.template) {
-          for (const channel of this.template) channel.fill(0);
-        }
-      }
     }
   }
 
@@ -135,19 +158,19 @@ class StretchProcessor extends AudioWorkletProcessor {
    * Best splice offset within the search window.
    *
    * Correlates the candidate region against the template left by the previous
-   * frame. Normalised by candidate energy so a loud passage does not always
-   * win on raw correlation alone.
+   * frame, normalised by candidate energy so a loud passage does not win on
+   * raw correlation alone.
    */
   findOffset(nominal) {
     const source = this.channels[0];
     const template = this.template[0];
 
-    let bestOffset = 0;
-    let bestScore = -Infinity;
-
     const low = Math.max(0, nominal - SEARCH);
     const high = Math.min(this.sourceLength - FRAME - 1, nominal + SEARCH);
     if (high <= low) return 0;
+
+    let bestOffset = 0;
+    let bestScore = -Infinity;
 
     // Step of 4 rather than 1. At 48 kHz that is a 12 sample resolution on the
     // splice point, inaudible here, and it cuts the search cost fourfold.
@@ -169,7 +192,12 @@ class StretchProcessor extends AudioWorkletProcessor {
     return bestOffset;
   }
 
-  /** Produce one SYNTHESIS_HOP of time-scaled audio into the OLA buffers. */
+  /**
+   * Overlap-add one frame.
+   *
+   * Everything before writePosition is final: the next frame only touches
+   * [writePosition, writePosition + FRAME).
+   */
   synthesizeFrame() {
     const rate = this.tempo / this.pitch;
     const nominal = Math.round(this.readPosition);
@@ -179,56 +207,61 @@ class StretchProcessor extends AudioWorkletProcessor {
       return false;
     }
 
-    // Bypass the correlation search when the correction is negligible, which
-    // is most of the time. Keeps idle CPU low.
-    const offset = Math.abs(rate - 1) < 0.002 ? 0 : this.findOffset(nominal);
+    if (this.writePosition + FRAME > CAPACITY) {
+      this.compact();
+    }
+
+    // Skip the correlation search when the correction is negligible, which is
+    // most of the time, and on the first frame when there is no template yet.
+    const offset =
+      !this.hasTemplate || Math.abs(rate - 1) < 0.002 ? 0 : this.findOffset(nominal);
     const start = Math.max(0, Math.min(this.sourceLength - FRAME - 1, nominal + offset));
 
-    // Make room if the buffer is filling up.
-    if (this.olaLength + FRAME > this.olaBuffers[0].length) {
-      this.compactOla();
-    }
+    const frameEnd = this.writePosition + FRAME;
 
     for (let c = 0; c < this.channelCount; c++) {
       const source = this.channels[c];
       const destination = this.olaBuffers[c];
-      const base = this.olaLength;
 
-      // Overlap-add: the first half lands on the previous frame's tail, the
-      // second half is new territory.
-      for (let i = 0; i < FRAME; i++) {
-        const windowed = source[start + i] * this.window[i];
-        const index = base - SYNTHESIS_HOP + i;
-        if (index < 0) continue;
-        if (index < base) {
-          destination[index] += windowed;
-        } else {
-          destination[index] = windowed;
-        }
+      // Zero only the stretch this frame reaches into for the first time.
+      // Everything from writePosition to clearedTo already holds a partial sum
+      // from the previous frame and must be added to, not overwritten.
+      if (frameEnd > this.clearedTo) {
+        destination.fill(0, this.clearedTo, frameEnd);
       }
 
-      // Template for the next search: what this frame predicts comes next.
+      for (let i = 0; i < FRAME; i++) {
+        destination[this.writePosition + i] += source[start + i] * this.window[i];
+      }
+
       const template = this.template[c];
       for (let i = 0; i < SYNTHESIS_HOP; i++) {
         template[i] = source[start + SYNTHESIS_HOP + i];
       }
     }
 
-    this.olaLength += SYNTHESIS_HOP;
+    if (frameEnd > this.clearedTo) this.clearedTo = frameEnd;
+    this.hasTemplate = true;
+
+    this.writePosition += SYNTHESIS_HOP;
     this.readPosition += SYNTHESIS_HOP * rate;
     return true;
   }
 
-  /** Drop already-consumed audio from the front of the OLA buffers. */
-  compactOla() {
-    const keep = this.olaLength - this.olaRead;
+  /** Slide consumed audio off the front of the OLA buffers. */
+  compact() {
+    const drop = Math.max(0, Math.floor(this.resamplePosition) - 1);
+    if (drop <= 0) return;
+
     for (let c = 0; c < this.channelCount; c++) {
-      this.olaBuffers[c].copyWithin(0, this.olaRead, this.olaLength);
-      this.olaBuffers[c].fill(0, keep);
+      const buffer = this.olaBuffers[c];
+      buffer.copyWithin(0, drop, this.clearedTo);
+      buffer.fill(0, Math.max(0, this.clearedTo - drop));
     }
-    this.olaLength = keep;
-    this.resamplePosition -= this.olaRead;
-    this.olaRead = 0;
+
+    this.writePosition -= drop;
+    this.clearedTo = Math.max(0, this.clearedTo - drop);
+    this.resamplePosition -= drop;
   }
 
   process(_inputs, outputs) {
@@ -241,16 +274,16 @@ class StretchProcessor extends AudioWorkletProcessor {
     }
 
     for (let i = 0; i < blockSize; i++) {
-      // Stage two needs one sample either side of resamplePosition. Keep
-      // stage one ahead of it, with a frame of slack.
-      while (this.resamplePosition + 2 >= this.olaLength - SYNTHESIS_HOP) {
+      // Keep finalised output ahead of the read head. Only samples strictly
+      // before writePosition are done being summed.
+      while (this.resamplePosition + 2 >= this.writePosition) {
         if (!this.synthesizeFrame()) break;
       }
 
       if (this.ended) {
         for (let c = 0; c < output.length; c++) output[c].fill(0, i);
-        this.port.postMessage({ type: "ended" });
         this.playing = false;
+        this.port.postMessage({ type: "ended" });
         return true;
       }
 
@@ -265,7 +298,6 @@ class StretchProcessor extends AudioWorkletProcessor {
       }
 
       this.resamplePosition += this.pitch;
-      this.olaRead = index;
     }
 
     this.samplesSincePosition += blockSize;

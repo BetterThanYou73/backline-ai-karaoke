@@ -30,6 +30,12 @@ def _float(name: str, default: float) -> float:
 
 STUB_MODE = _flag("STUB_MODE", "1")
 
+# Progress bars off by default. This is a service, not a terminal session, and
+# a carriage-return progress bar written into a log file is unreadable. Use
+# download_models.py when you actually want to watch a download.
+if not _flag("HF_PROGRESS_BARS", "0"):
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
 DEVICE = os.getenv("DEVICE", "cuda")
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = _int("PORT", 8001)
