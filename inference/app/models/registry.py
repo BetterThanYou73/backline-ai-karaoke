@@ -32,8 +32,13 @@ def _torch():
 
 
 def cuda_available() -> bool:
-    if config.STUB_MODE:
-        return False
+    """Whether CUDA is usable, independent of STUB_MODE.
+
+    Reported honestly even in stub mode so /health tells you whether turning
+    stub mode off would actually get you GPU generation. Returns False rather
+    than raising when torch is not installed at all, which is the normal state
+    of a base-tier install.
+    """
     try:
         return bool(_torch().cuda.is_available())
     except Exception:

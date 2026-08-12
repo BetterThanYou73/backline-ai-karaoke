@@ -2,8 +2,19 @@ import path from "node:path";
 
 const appRoot = process.cwd();
 
+/**
+ * Resolve a configured path against the app root.
+ *
+ * The turbopackIgnore comment is deliberate. Turbopack's static analysis sees
+ * a non-literal path here and assumes the whole project needs tracing into the
+ * server bundle, which is the right default for a serverless deploy and the
+ * wrong one for a self-hosted server whose data directories are set by the
+ * operator at runtime.
+ */
 function resolveFromApp(value: string): string {
-  return path.isAbsolute(value) ? value : path.resolve(appRoot, value);
+  return path.isAbsolute(value)
+    ? value
+    : path.resolve(/* turbopackIgnore: true */ appRoot, value);
 }
 
 export const INFERENCE_API_URL = (
