@@ -21,6 +21,13 @@ rendered as successive melody-conditioned windows joined with equal-power
 crossfades, seeded deterministically per song and style so a re-render
 reproduces the same take.
 
+That the output actually follows the source is checkable rather than assumed.
+Correlating the chroma of a generated track against its source frame by frame
+gives +0.53, while the same track against a time-reversed copy of that source
+gives +0.29. The gap is the conditioning doing its job; without it both numbers
+would sit together, since two pieces in the same key correlate somewhat no
+matter what.
+
 **Real-time DSP in the browser, zero network in the loop.** Pitch detection
 (YIN) and time-scale modification (WSOLA plus interpolated resampling) both run
 inside AudioWorklets on the audio render thread. Once the backing track is
@@ -33,9 +40,13 @@ cache index, song metadata, and session state, and calls inference only on a
 cache miss. The split means the GPU box can move to another machine on the LAN
 by changing one environment variable.
 
-**Built for 8 GB of VRAM.** The music model and Whisper cannot both stay
-resident on a laptop 4070, so a model registry keeps exactly one loaded,
-evicting on switch and freeing after an idle timeout.
+**Built for 8 GB of VRAM.** MusicGen-melody at fp16 occupies 6803 MiB of the
+8187 MiB on a laptop 4070, so Whisper cannot be resident at the same time. A
+model registry keeps exactly one model loaded, evicts on switch, and frees
+after an idle timeout. Measured on this machine: 6803 MiB with MusicGen
+resident, 2006 MiB after a transcription evicts it.
+
+Rendering 20 seconds of audio takes about 36 seconds on that card.
 
 ## Stack
 

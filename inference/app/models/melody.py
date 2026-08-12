@@ -159,6 +159,15 @@ def _musicgen_chunk(
             return_tensors="pt",
         ).to(device)
 
+        # The processor always emits fp32 chroma, but the weights are fp16, and
+        # the first matmul refuses to mix them. Cast only the floating point
+        # entries: input_ids and attention masks are integer tensors and must
+        # stay that way.
+        model_dtype = next(model.parameters()).dtype
+        for key, value in inputs.items():
+            if torch.is_tensor(value) and value.is_floating_point():
+                inputs[key] = value.to(model_dtype)
+
         torch.manual_seed(seed)
 
         try:
