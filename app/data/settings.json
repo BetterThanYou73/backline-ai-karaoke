@@ -1,8 +1,0 @@
-{
-  "maxRenderSeconds": 0,
-  "maxSemitones": 2,
-  "maxTempoDrift": 0.15,
-  "adaptivePlayback": true,
-  "cameraOverlay": true,
-  "calmVisuals": false
-}

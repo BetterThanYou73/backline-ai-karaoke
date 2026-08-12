@@ -25,6 +25,7 @@ cache/
 app/data/songs/*
 !app/data/songs/.gitkeep
 app/data/songs.json
+app/data/settings.json
 app/data/imports/
 
 # OS
