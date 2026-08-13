@@ -40,8 +40,10 @@ export function ImportPanel({ onImported }: { onImported: () => void }) {
       <div>
         <strong>Import your own track</strong>
         <p className="muted" style={{ fontSize: 14, margin: "6px 0 0", lineHeight: 1.6 }}>
-          It gets analysed for tempo and key, re-rendered into whichever style
-          you pick, and transcribed for lyrics. Everything stays on this machine.
+          It gets analysed for tempo, key and chords, then re-rendered into
+          whichever style you pick. Title and artist come from the file&apos;s own
+          tags. The audio never leaves this machine; only lyrics lookup reaches
+          the network, and only if you switch it on in settings.
         </p>
       </div>
 
