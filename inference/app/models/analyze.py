@@ -105,6 +105,30 @@ def extract_melody_contour(
     return contour
 
 
+def extract_beats(audio: np.ndarray, sr: int) -> np.ndarray:
+    """The song's actual beat times, in seconds.
+
+    This is the spine of the whole product. Lyrics are timed to the original
+    recording, so anything the backing track plays has to land on the
+    original's beats, not on a grid computed from an average tempo and started
+    at zero. A track at exactly the right bpm but the wrong phase is just as
+    unsingable as one at the wrong tempo.
+    """
+    import librosa
+
+    if audio.size < sr:
+        return np.array([])
+
+    # Percussive component: beat tracking wants transients, and the sustained
+    # harmonic material only blurs the onset envelope.
+    percussive = librosa.effects.percussive(audio, margin=3.0)
+    onset = librosa.onset.onset_strength(y=percussive, sr=sr, hop_length=HOP)
+    _, frames = librosa.beat.beat_track(
+        onset_envelope=onset, sr=sr, hop_length=HOP, tightness=100
+    )
+    return librosa.frames_to_time(frames, sr=sr, hop_length=HOP)
+
+
 def extract_chords(audio: np.ndarray, sr: int) -> list[dict]:
     """Recover the song's chord progression as timed segments.
 

@@ -28,7 +28,27 @@ def _float(name: str, default: float) -> float:
         return default
 
 
-STUB_MODE = _flag("STUB_MODE", "1")
+#
+# Which engine renders backing tracks.
+#
+#   arranger  - extracts the song's beat grid and chord progression and plays
+#               an arrangement on it. Locked to the source by construction, so
+#               lyrics timed to the original recording actually line up.
+#   musicgen  - MusicGen-melody. Generates a plausible instrumental near the
+#               melody, but not on the source's grid: measured at a fifth of a
+#               beat out with rhythmic correlation near zero, which is not
+#               something you can sing over. Kept for texture and comparison.
+#
+# The default is `arranger` because it is the one that passes
+# tools/singability.py, which is the only test that reflects what the product
+# is for.
+ENGINE = os.getenv("ENGINE", "arranger").strip().lower()
+
+# Back-compat: STUB_MODE=0 used to mean "use MusicGen".
+if os.getenv("ENGINE") is None and os.getenv("STUB_MODE") == "0":
+    ENGINE = "musicgen"
+
+STUB_MODE = ENGINE != "musicgen"
 
 # Progress bars off by default. This is a service, not a terminal session, and
 # a carriage-return progress bar written into a log file is unreadable. Use

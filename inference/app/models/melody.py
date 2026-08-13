@@ -1,17 +1,21 @@
-﻿"""Melody-conditioned instrumental generation.
+﻿"""Backing track rendering.
 
-Two implementations behind one entry point, `render_track`:
+Two engines behind one entry point, `render_track`, selected by config.ENGINE.
 
-* STUB_MODE=1 - a small additive synth that plays the extracted melody contour
-  with per-style timbre. No model download, runs in about a second, and it
-  exercises the exact same chunk/crossfade/length-match path as the real model,
-  so the App Server and the client DSP layer can be built and tested first.
+* `arranger` (default) - extracts the song's beat grid and chord progression
+  and plays an arrangement on it. Locked to the source by construction, which
+  is the property that matters: lyrics are timed to the original recording, so
+  a backing track that is not on the original's grid cannot be sung over
+  whatever else it does well.
 
-* STUB_MODE=0 - MusicGen-melody. MusicGen emits at most 30 seconds per call, so
-  a full song is rendered as successive windows, each conditioned on the melody
-  of that window, then crossfaded. Seams are the known quality seam of this
-  approach: the model has no memory across windows, so harmony can shift at a
-  boundary. Fixed per-song+style seeding keeps it deterministic.
+* `musicgen` - MusicGen-melody. Emits at most 30 seconds per call, so a full
+  song is rendered as successive melody-conditioned windows and crossfaded. It
+  produces a plausible instrumental near the melody, but measurement puts it a
+  fifth of a beat off the source with rhythmic correlation near zero, and it
+  carries nothing between windows, so it has no verse or chorus. Kept for
+  texture and for comparison, not as the default.
+
+tools/singability.py is the test that decides between them.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from ..audio_utils import (
     normalize_peak,
 )
 from ..styles import STYLES, Style
-from . import registry, stub_synth
+from . import registry, arranger
 
 ProgressFn = Callable[[float], None]
 
@@ -98,7 +102,9 @@ def render_track(
     # does not contain enough context to tell a progression from a coincidence,
     # and the chunk renderers need absolute song time anyway to know which
     # chord they are sitting on.
-    chords = _chords_for(audio, sr) if config.STUB_MODE else []
+    use_arranger = config.ENGINE != "musicgen"
+    chords = _chords_for(audio, sr) if use_arranger else []
+    beat_times = _beats_for(audio, sr) if use_arranger else None
 
     rendered = np.zeros(0, dtype=np.float32)
     chunk_seconds = max(5.0, min(config.CHUNK_SECONDS, 30.0))
@@ -113,8 +119,10 @@ def render_track(
         melody = audio[begin:end]
 
         chunk = (
-            _stub_chunk(melody, sr, style, seed + index, length, chords, start)
-            if config.STUB_MODE
+            _arranger_chunk(
+                melody, sr, style, seed + index, length, chords, start, beat_times
+            )
+            if config.ENGINE != "musicgen"
             else _musicgen_chunk(melody, sr, style, seed + index, length)
         )
         chunk = match_length(chunk, int(length * config.GENERATION_SR))
@@ -236,7 +244,7 @@ def _musicgen_chunk(
 
 
 # --------------------------------------------------------------------------
-# Stub path: a small arranged band, see stub_synth.py
+# Arranger path: plays the song's own chords on its own grid
 # --------------------------------------------------------------------------
 
 
@@ -250,7 +258,7 @@ def _chords_for(audio: np.ndarray, sr: int) -> list[dict]:
         return []
 
 
-def _stub_chunk(
+def _arranger_chunk(
     melody: np.ndarray,
     sr: int,
     style: Style,
@@ -258,11 +266,12 @@ def _stub_chunk(
     seconds: float,
     chords: list[dict] | None = None,
     chunk_start: float = 0.0,
+    beat_times: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Placeholder instrumental, built from the source melody and its chords.
+    """Backing track for one chunk, played on the song's own grid.
 
-    Extracts a coarse pitch track, then hands it and the song's real chord
-    progression to the stub arranger.
+    Extracts a coarse pitch track for the lead, then hands it, the song's real
+    chord progression and its measured beat times to the arranger.
     """
     frame = int(0.046 * sr)
     if frame <= 0:
@@ -278,7 +287,7 @@ def _stub_chunk(
     if pitches.size == 0:
         pitches = np.zeros(1, dtype=np.float32)
 
-    return stub_synth.render(
+    return arranger.render(
         pitches=pitches,
         frame_seconds=frame / sr,
         style_id=style.id,
@@ -288,11 +297,23 @@ def _stub_chunk(
         seed=seed,
         chords=chords,
         chunk_start=chunk_start,
+        beat_times=beat_times,
     )
 
 
+def _beats_for(audio: np.ndarray, sr: int) -> np.ndarray | None:
+    """The song's measured beat times, which the arrangement is played on."""
+    try:
+        from .analyze import extract_beats
+
+        beats = extract_beats(audio, sr)
+        return beats if beats.size else None
+    except Exception:
+        return None
+
+
 def _estimate_bpm(audio: np.ndarray, sr: int) -> float:
-    """Tempo of the source, so the stub band plays along with it."""
+    """Tempo of the source, so the band plays at its speed."""
     try:
         import librosa
 
@@ -326,3 +347,5 @@ def _autocorr_pitch(
 
 
 __all__ = ["render_track", "stable_seed"]
+
+
