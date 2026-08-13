@@ -19,11 +19,15 @@ export async function GET(
     return NextResponse.json({ error: "unknown song" }, { status: 404 });
   }
 
-  const lyrics = await resolveLyrics(song);
+  const resolved = await resolveLyrics(song);
 
-  // Duration stays 0 until the background analysis pass fills it in.
   return NextResponse.json({
-    song: { ...toPublicSong(song), lyrics },
+    song: {
+      ...toPublicSong(song),
+      lyrics: resolved.lyrics,
+      lyricsSource: resolved.source,
+      lyricsMatch: resolved.match,
+    },
     melodyContour: song.melodyContour,
   });
 }

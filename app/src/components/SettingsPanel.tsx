@@ -173,6 +173,23 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
             <section className="setting">
               <div className="setting-label">
+                <strong>Look up songs online</strong>
+                <span className="muted">
+                  Fetches real synced lyrics from LRCLIB instead of transcribing
+                  them, which is both more accurate and better timed. Only the
+                  title, artist and duration are sent. Never the audio. Off by
+                  default because everything else here stays on this machine.
+                </span>
+              </div>
+              <Toggle
+                checked={settings.onlineLookup}
+                onChange={(value) => void patch({ onlineLookup: value })}
+                label="Look up songs online"
+              />
+            </section>
+
+            <section className="setting">
+              <div className="setting-label">
                 <strong>Camera overlay</strong>
                 <span className="muted">
                   Face tracking and reactive effects on the performance screen.

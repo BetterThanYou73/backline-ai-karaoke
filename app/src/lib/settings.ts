@@ -29,6 +29,14 @@ export interface Settings {
   cameraOverlay: boolean;
   /** Reduce the on-screen motion regardless of the OS setting. */
   calmVisuals: boolean;
+  /**
+   * Look up song details and synced lyrics online.
+   *
+   * Off by default. Everything else in this app runs on the machine it is
+   * installed on, and turning that on for someone silently would be the wrong
+   * default even though only a title, artist and duration ever leave.
+   */
+  onlineLookup: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -38,6 +46,7 @@ export const DEFAULT_SETTINGS: Settings = {
   adaptivePlayback: true,
   cameraOverlay: true,
   calmVisuals: false,
+  onlineLookup: false,
 };
 
 export const SETTINGS_LIMITS = {
@@ -65,7 +74,7 @@ function coerce(raw: unknown): Settings {
     return clamp(value, min, max);
   };
   const pickBoolean = (
-    key: "adaptivePlayback" | "cameraOverlay" | "calmVisuals",
+    key: "adaptivePlayback" | "cameraOverlay" | "calmVisuals" | "onlineLookup",
   ): boolean =>
     typeof input[key] === "boolean" ? (input[key] as boolean) : DEFAULT_SETTINGS[key];
 
@@ -76,6 +85,7 @@ function coerce(raw: unknown): Settings {
     adaptivePlayback: pickBoolean("adaptivePlayback"),
     cameraOverlay: pickBoolean("cameraOverlay"),
     calmVisuals: pickBoolean("calmVisuals"),
+    onlineLookup: pickBoolean("onlineLookup"),
   };
 }
 

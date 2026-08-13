@@ -10,7 +10,12 @@ export interface Song {
   id: string;
   title: string;
   artist: string;
+  album?: string;
   source: "ncs" | "import";
+  /** Where the lyrics came from, so the UI can be honest about it. */
+  lyricsSource?: "sidecar" | "lrclib" | "whisper" | "none";
+  /** What LRCLIB matched, when it was used. */
+  lyricsMatch?: string;
   /** Path relative to SONGS_DIR, or to the imports directory. */
   file: string;
   duration: number;

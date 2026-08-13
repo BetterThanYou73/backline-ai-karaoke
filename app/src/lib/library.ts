@@ -6,6 +6,7 @@ import path from "node:path";
 import { AUDIO_EXTENSIONS, CACHE_DIR, IMPORTS_DIR, SONGS_DIR, SONGS_INDEX } from "./config";
 import { pruneOrphanedTracks } from "./db";
 import * as inference from "./inference";
+import { readTags } from "./metadata";
 import type { LyricLine, Song } from "./types";
 
 /**
@@ -181,7 +182,13 @@ async function scanDirectory(
     // let the next scan take it.
     if (stat.size < 1024) continue;
 
-    const { title, artist } = titleFromFilename(entry.name);
+    // Embedded tags first: a file that knows its own title and artist is
+    // telling the truth, whereas "Artist - Title.mp3" is a convention people
+    // follow only sometimes.
+    const tags = await readTags(absolutePath);
+    const guessed = titleFromFilename(entry.name);
+    const title = tags.title || guessed.title;
+    const artist = tags.artist || guessed.artist;
 
     found.push({
       // Scoped by source directory: without it, importing a file whose name
@@ -193,8 +200,11 @@ async function scanDirectory(
       source,
       file: entry.name,
       absolutePath,
+      album: tags.album,
       fingerprint: fingerprint(stat.size, stat.mtimeMs),
-      duration: 0,
+      // Tags usually carry duration, which means the library can show a real
+      // running time immediately rather than "--:--" until analysis lands.
+      duration: tags.durationSeconds ? Number(tags.durationSeconds.toFixed(3)) : 0,
       bpm: null,
       key: null,
       lyrics: (await readSidecarLyrics(absolutePath)) ?? [],

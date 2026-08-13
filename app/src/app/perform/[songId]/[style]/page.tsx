@@ -27,7 +27,7 @@ export default async function PerformPage({
   if (!song) notFound();
 
   const skin = STYLES[style];
-  const lyrics = await resolveLyrics(song);
+  const resolved = await resolveLyrics(song);
 
   return (
     <main className="shell stage-shell">
@@ -43,9 +43,21 @@ export default async function PerformPage({
             {skin.genre}
           </span>
         </div>
-        <Link href={`/style/${song.id}`} className="pill">
-          Change style
-        </Link>
+        <div className="song-meta">
+          {resolved.source === "lrclib" ? (
+            <span className="pill good" title={resolved.match}>
+              synced lyrics
+            </span>
+          ) : null}
+          {resolved.source === "whisper" ? (
+            <span className="pill" title="Transcribed from the audio. Turn on online lookup in settings for the real words.">
+              transcribed lyrics
+            </span>
+          ) : null}
+          <Link href={`/style/${song.id}`} className="pill">
+            Change style
+          </Link>
+        </div>
       </div>
 
       <PerformanceStage
@@ -53,7 +65,7 @@ export default async function PerformPage({
         songTitle={song.title}
         style={style}
         skin={skin}
-        lyrics={lyrics}
+        lyrics={resolved.lyrics}
         melodyContour={song.melodyContour}
         bpm={song.bpm}
       />
