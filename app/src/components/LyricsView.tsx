@@ -56,6 +56,34 @@ export function LyricsView({
     );
   }
 
+  // Nothing is being sung right now: an intro, an instrumental break, or the
+  // outro. Leaving the previous line on screen reads as "sing this", which is
+  // wrong and is the single most confusing thing the old version did. Say what
+  // is happening instead, and count in the next line so the entry is not a
+  // surprise.
+  if (activeIndex === -1) {
+    const next = lyrics.find((line) => line.start > position);
+    const until = next ? next.start - position : null;
+
+    return (
+      <div className="lyrics lyrics-rest" ref={containerRef}>
+        <span className="lyric-rest-label muted">
+          {next ? "instrumental" : "that's the end"}
+        </span>
+        {next && until !== null ? (
+          <>
+            {until <= 6 ? (
+              <span className="lyric-countdown" style={{ color: accent }}>
+                {"•".repeat(Math.max(1, Math.ceil(until / 1.2)))}
+              </span>
+            ) : null}
+            <span className="lyric-next muted">{next.text}</span>
+          </>
+        ) : null}
+      </div>
+    );
+  }
+
   const window = lyrics
     .map((line, index) => ({ line, index }))
     .filter(({ index }) => index >= activeIndex - 1 && index <= activeIndex + 2);

@@ -745,6 +745,31 @@ body[data-calm="true"] *::after {
   text-align: center;
 }
 
+/* Intro, instrumental break, or outro: nothing to sing. */
+.lyrics-rest {
+  align-items: center;
+  text-align: center;
+  gap: 14px;
+}
+
+.lyric-rest-label {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* Count-in. One dot per 1.2s, so the dots run out as the line arrives. */
+.lyric-countdown {
+  font-size: 26px;
+  letter-spacing: 0.3em;
+  line-height: 1;
+}
+
+.lyric-next {
+  font-size: 17px;
+  opacity: 0.55;
+}
+
 .lyric-line {
   position: relative;
   font-size: 19px;
