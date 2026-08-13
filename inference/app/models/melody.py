@@ -172,6 +172,16 @@ def _load_musicgen():
     return {"model": model, "processor": processor}
 
 
+#
+# Tried and rejected: stripping percussion with an HPSS pass before handing
+# audio to the chroma conditioner. The reasoning was sound, since a full mix is
+# mostly drums by energy and a kick puts energy in every pitch class at once,
+# but it does not survive measurement. Over four matched seeds the harmonic
+# agreement with the source changed by -0.019 +/- 0.063, better on two seeds of
+# four, which is noise, and it costs an HPSS pass per chunk. Recorded here so
+# it is not rediscovered and shipped on the strength of the argument alone.
+
+
 def _musicgen_chunk(
     melody: np.ndarray, sr: int, style: Style, seed: int, seconds: float
 ) -> np.ndarray:

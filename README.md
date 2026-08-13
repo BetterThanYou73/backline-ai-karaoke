@@ -180,8 +180,23 @@ server polls status and shows a loading state.
 
 ## Known limits
 
-Chunk boundaries in a generated track can shift harmonically, because MusicGen
-has no memory across windows. Crossfades hide the seam but do not remove it.
+**MusicGen has no memory across windows.** It generates at most 30 seconds per
+call, so a full song is rendered as successive windows, and nothing carries
+between them. Each window follows the melody it was conditioned on, but the
+arrangement can restart, and there is no verse, no chorus, no return of
+anything. On a song with real structure this is what you hear: it holds up for
+a window and then stops resembling the song's shape, however well each
+individual window tracks its own melody. This is a property of the model, not
+of the wiring around it, and it is not fixable at 1.5B parameters on 8 GB.
+
+Stripping percussion from the conditioning audio with HPSS was tried, on the
+reasoning that a full mix is mostly drums by energy and drums smear chroma
+across every pitch class. Measured over four matched seeds it changed harmonic
+agreement by -0.019 +/- 0.063, better on two seeds of four. Noise. Not shipped.
+
+The stub arranger does follow song structure, because it works from the
+extracted chord progression rather than generating, so ironically it stays
+recognisably the same song for longer than the real model does.
 
 Live tempo tracking from a monophonic vocal is coarse. It is smoothed heavily
 and held at 1.0 when confidence is low, which is the honest behaviour rather
