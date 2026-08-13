@@ -89,6 +89,27 @@ def output_path(stem: str, suffix: str = ".wav") -> Path:
     return config.OUTPUT_DIR / f"{stem}{suffix}"
 
 
+def prune_output(keep: int = 12) -> None:
+    """Keep only the most recent renders in OUTPUT_DIR.
+
+    This directory is a handover point, not storage: the App Server copies each
+    render into its own cache and never asks again. Left alone it became a pile
+    of every render ever made, across engines, with nothing to say which was
+    which, and it was the thing that made the cache confusing to look at.
+    """
+    try:
+        renders = sorted(
+            (p for p in config.OUTPUT_DIR.glob("*.wav") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in renders[keep:]:
+            stale.unlink(missing_ok=True)
+    except Exception:
+        # Housekeeping must never break a render.
+        pass
+
+
 def unique_stem(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:10]}"
 

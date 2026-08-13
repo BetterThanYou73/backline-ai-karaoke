@@ -129,6 +129,43 @@ def extract_beats(audio: np.ndarray, sr: int) -> np.ndarray:
     return librosa.frames_to_time(frames, sr=sr, hop_length=HOP)
 
 
+def estimate_downbeat_phase(
+    beat_times: np.ndarray, chords: list[dict], beats_per_bar: int = 4
+) -> int:
+    """Which beat in the cycle is beat one.
+
+    Beat tracking finds where the beats are, not which of them starts a bar,
+    and it has no reason to start its list on a downbeat. Placing a kick on
+    index 0 of that list therefore puts it on the backbeat about half the time.
+    That is a whole beat of phase error: the grid is right, the bar is wrong,
+    and to anyone singing along the song feels displaced.
+
+    Chords are the giveaway. Harmony changes on bar lines far more often than
+    inside them, so the phase that catches the most chord changes is the one
+    that starts bars.
+    """
+    if beat_times.size < beats_per_bar or not chords:
+        return 0
+
+    changes = np.array([chord["start"] for chord in chords[1:]], dtype=np.float64)
+    if changes.size == 0:
+        return 0
+
+    # Half a beat: close enough to call a chord change "on" that beat.
+    tolerance = float(np.median(np.diff(beat_times))) * 0.5 if beat_times.size > 1 else 0.25
+
+    scores = np.zeros(beats_per_bar)
+    for phase in range(beats_per_bar):
+        candidates = beat_times[phase::beats_per_bar]
+        if candidates.size == 0:
+            continue
+        for change in changes:
+            if np.min(np.abs(candidates - change)) <= tolerance:
+                scores[phase] += 1
+
+    return int(np.argmax(scores))
+
+
 def extract_chords(audio: np.ndarray, sr: int) -> list[dict]:
     """Recover the song's chord progression as timed segments.
 

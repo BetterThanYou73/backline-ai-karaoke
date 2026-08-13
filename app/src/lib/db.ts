@@ -1,4 +1,4 @@
-import fs from "node:fs";
+﻿import fs from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 import { CACHE_DIR, DB_PATH } from "./config";
@@ -33,6 +33,7 @@ function connect(): DatabaseSync {
       id          TEXT PRIMARY KEY,
       song_id     TEXT NOT NULL,
       style       TEXT NOT NULL,
+      engine      TEXT NOT NULL DEFAULT 'unknown',
       file        TEXT NOT NULL,
       bpm         REAL,
       key         TEXT,
@@ -50,6 +51,18 @@ function connect(): DatabaseSync {
     );
   `);
 
+  // Databases created before the engine column existed. Adding it here rather
+  // than requiring a wipe, since the whole point of the cache is not losing
+  // renders that cost minutes of GPU time each.
+  const columns = handle
+    .prepare("PRAGMA table_info(generated_track)")
+    .all() as { name: string }[];
+  if (!columns.some((column) => column.name === "engine")) {
+    handle.exec(
+      "ALTER TABLE generated_track ADD COLUMN engine TEXT NOT NULL DEFAULT 'unknown'",
+    );
+  }
+
   db = handle;
   return db;
 }
@@ -58,6 +71,7 @@ interface TrackRow {
   id: string;
   song_id: string;
   style: string;
+  engine: string;
   file: string;
   bpm: number | null;
   key: string | null;
@@ -70,6 +84,7 @@ function toTrack(row: TrackRow): GeneratedTrack {
     id: row.id,
     songId: row.song_id,
     style: row.style as StyleId,
+    engine: row.engine ?? "unknown",
     audioUrl: `/api/media/track/${encodeURIComponent(row.file)}`,
     bpm: row.bpm,
     key: row.key,
@@ -88,6 +103,7 @@ export function findTrack(songId: string, style: StyleId): GeneratedTrack | null
 export function saveTrack(input: {
   songId: string;
   style: StyleId;
+  engine: string;
   file: string;
   bpm: number | null;
   key: string | null;
@@ -97,9 +113,10 @@ export function saveTrack(input: {
 
   connect()
     .prepare(
-      `INSERT INTO generated_track (id, song_id, style, file, bpm, key, duration, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO generated_track (id, song_id, style, engine, file, bpm, key, duration, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (song_id, style) DO UPDATE SET
+         engine = excluded.engine,
          file = excluded.file,
          bpm = excluded.bpm,
          key = excluded.key,
@@ -110,6 +127,7 @@ export function saveTrack(input: {
       id,
       input.songId,
       input.style,
+      input.engine,
       input.file,
       input.bpm,
       input.key,
@@ -167,3 +185,4 @@ export function putCachedLyrics(songId: string, payload: unknown): void {
     )
     .run(songId, JSON.stringify(payload), new Date().toISOString());
 }
+

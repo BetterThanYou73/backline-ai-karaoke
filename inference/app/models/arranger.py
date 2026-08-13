@@ -476,6 +476,7 @@ def _drums(
     kit: StyleKit,
     rng: np.random.Generator,
     beat_times: np.ndarray | None = None,
+    bar_offset: int = 0,
 ) -> np.ndarray:
     """Kick on 1 and 3, snare on 2 and 4, hats between.
 
@@ -536,7 +537,11 @@ def _drums(
                 break
             nxt = beat_times[index + 1] if index + 1 < beat_times.size else start + beat
             span = max(1e-3, float(nxt - start))
-            in_bar = index % 4
+            # bar_offset shifts which beat counts as one. Without it the kick
+            # lands on the backbeat roughly half the time, which is a whole
+            # beat of phase error and the single most disorienting thing a
+            # backing track can do.
+            in_bar = (index - bar_offset) % 4
 
             if in_bar in (0, 2):
                 place(kick, float(start))
@@ -639,6 +644,7 @@ def render(
     chords: list[dict] | None = None,
     chunk_start: float = 0.0,
     beat_times: np.ndarray | None = None,
+    downbeat_phase: int = 0,
 ) -> np.ndarray:
     """Render a placeholder instrumental for one chunk.
 
@@ -747,35 +753,44 @@ def render(
                     )
                 position += bar
 
-    # --- lead, following the source melody ---
-    # Group consecutive frames of similar pitch into notes, so the lead phrases
-    # rather than restarting every 46 ms.
-    index = 0
-    while index < pitches.size:
-        hz = float(pitches[index])
-        if hz <= 0:
-            index += 1
+    # --- counter-line ---
+    #
+    # Deliberately not the vocal melody. An earlier version tracked the melody
+    # with autocorrelation over the full mix and played it back an octave down.
+    # Two things were wrong with that. Autocorrelation on a full mix locks onto
+    # whatever is loudest from moment to moment, bass one instant and a cymbal
+    # the next, so the line was largely random notes. And even done perfectly,
+    # a backing track that plays the tune competes with the person singing it,
+    # which is why commercial karaoke tracks leave the melody out.
+    #
+    # What is left is a sparse chord-tone line: notes drawn from the chord
+    # under them, held long, sitting well below the vocal register.
+    for start, end, root, quality in plan:
+        span = end - start
+        if span <= 0.4:
             continue
 
-        run = 1
-        while (
-            index + run < pitches.size
-            and pitches[index + run] > 0
-            and abs(1200 * np.log2(pitches[index + run] / hz)) < 90
-        ):
-            run += 1
+        voicing = _chord_voicing(root, quality)
+        # The third and fifth, not the root: the bass already has the root, and
+        # doubling it just thickens the low end.
+        tone = voicing[1 + (int(start * 2) % 2)]
 
-        start = index * frame_seconds
-        length = max(0.12, run * frame_seconds)
-        if start >= seconds:
-            break
+        # One note per chord, entering just after the change so it answers the
+        # harmony rather than announcing it, and held for most of the chord.
+        mix_into(
+            lead,
+            _note(_midi_to_hz(60 + (tone % 12)), span * 0.7, sr, kit.lead, rng),
+            start + min(0.25, span * 0.15),
+        )
 
-        # An octave down: the lead should support the singer, not sit on the
-        # same notes and fight them.
-        mix_into(lead, _note(hz / 2, length, sr, kit.lead, rng), start)
-        index += run
+    # The chunk starts partway through the song, so the bar phase has to be
+    # rotated by however many beats were dropped ahead of it.
+    dropped = 0
+    if beat_times is not None and np.asarray(beat_times).size:
+        dropped = int(np.sum(np.asarray(beat_times) < chunk_start - beat))
+    local_offset = (downbeat_phase - dropped) % 4
 
-    drums = _drums(samples, sr, beat, kit, rng, local_beats)
+    drums = _drums(samples, sr, beat, kit, rng, local_beats, local_offset)
 
     mixed = (
         0.42 * _delay(lead, sr, kit.delay_beats * beat, kit.delay_mix)

@@ -91,6 +91,36 @@ def _nearest_distances(reference: np.ndarray, candidates: np.ndarray) -> np.ndar
     return np.minimum(np.abs(reference - left), np.abs(reference - right))
 
 
+def _onset_lag(source: np.ndarray, generated: np.ndarray) -> tuple[float, float]:
+    """Best alignment lag between two onset envelopes, in milliseconds.
+
+    Uses no beat tracking, so it is independent of the code that placed the
+    beats. Searched only within a couple of seconds, because a peak found half
+    a song away is a coincidence, not an alignment.
+    """
+    hop = 512
+    o_src = librosa.onset.onset_strength(y=source, sr=SR, hop_length=hop)
+    o_gen = librosa.onset.onset_strength(y=generated, sr=SR, hop_length=hop)
+    m = min(len(o_src), len(o_gen))
+    if m < 32:
+        return 0.0, 0.0
+
+    a = o_src[:m] - o_src[:m].mean()
+    b = o_gen[:m] - o_gen[:m].mean()
+    corr = np.correlate(a, b, mode="full") / (
+        np.sqrt((a**2).sum() * (b**2).sum()) + 1e-9
+    )
+
+    centre = m - 1
+    window = int(round(2.0 * SR / hop))
+    low = max(0, centre - window)
+    high = min(len(corr), centre + window + 1)
+    local = corr[low:high]
+    peak = int(np.argmax(local))
+    lag_frames = (low + peak) - centre
+    return lag_frames * hop / SR * 1000, float(local[peak])
+
+
 def _chroma_lift(source: np.ndarray, generated: np.ndarray) -> float:
     """Harmonic agreement above a time-shuffled control."""
     n = min(len(source), len(generated))
@@ -178,6 +208,23 @@ def evaluate(
             "%",
             detail=f"source {src_tempo:.1f}, render {gen_tempo:.1f} bpm",
         )
+    )
+
+    # Onset lag is reported, not graded.
+    #
+    # It was briefly a pass/fail check on the theory that it would catch a bar
+    # phase error independently of beat tracking. It cannot. The arrangement
+    # puts an onset on every beat, so the cross-correlation peaks at every beat
+    # too, and lag 0, one beat and two beats score within noise of each other:
+    # forcing all four bar phases produced an identical -882 ms reading. It is
+    # kept as a diagnostic because a lag that is *not* a whole multiple of the
+    # beat does mean something, but as a gate it only produced false alarms.
+    lag_ms, lag_corr = _onset_lag(source_span, generated)
+    beat_ms = 60_000 / max(src_tempo, 1e-6)
+    print(
+        f"  [note] onset lag {lag_ms:+.0f} ms (corr {lag_corr:+.2f}), "
+        f"{lag_ms / beat_ms:+.2f} beats. Whole multiples of a beat are "
+        f"expected here and are not evidence of a phase error."
     )
 
     usable = src_beats[src_beats < span]

@@ -1,4 +1,4 @@
-export type StyleId = "neon" | "velvet" | "riff" | "tide" | "grove" | "bloom";
+﻿export type StyleId = "neon" | "velvet" | "riff" | "tide" | "grove" | "bloom";
 
 export interface LyricLine {
   text: string;
@@ -29,6 +29,8 @@ export interface GeneratedTrack {
   id: string;
   songId: string;
   style: StyleId;
+  /** Which engine rendered it, so provenance is never ambiguous. */
+  engine: string;
   /** App server route that streams the cached audio. */
   audioUrl: string;
   bpm: number | null;
@@ -58,3 +60,4 @@ export interface RecapStats {
   notesHit: number;
   notesTotal: number;
 }
+

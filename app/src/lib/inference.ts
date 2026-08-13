@@ -1,4 +1,4 @@
-import { INFERENCE_API_URL } from "./config";
+﻿import { INFERENCE_API_URL } from "./config";
 import type { LyricLine, StyleId } from "./types";
 
 /**
@@ -22,11 +22,13 @@ export interface JobStatus {
   style?: string | null;
   duration?: number | null;
   error?: string | null;
+  engine?: string | null;
   queue_position?: number | null;
 }
 
 export interface InferenceHealth {
   ok: boolean;
+  engine: string;
   stub_mode: boolean;
   device: string;
   cuda_available: boolean;
@@ -159,3 +161,4 @@ export async function download(resultUrl: string): Promise<Buffer> {
 }
 
 export { InferenceError };
+

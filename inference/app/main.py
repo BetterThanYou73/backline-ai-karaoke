@@ -1,4 +1,4 @@
-"""Backline Inference API Server.
+﻿"""Backline Inference API Server.
 
 Headless, GPU-bound, LAN-only. Owns every ML model; knows nothing about
 sessions, users, or the cache index - that is the App Server's job.
@@ -21,7 +21,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from . import config
-from .audio_utils import output_path, resolve_source, unique_stem, write_wav
+from .audio_utils import (
+    output_path,
+    prune_output,
+    resolve_source,
+    unique_stem,
+    write_wav,
+)
 from .jobs import Job, as_dict, jobs
 from .models import analyze, melody, registry, transcribe
 from .schemas import (
@@ -76,6 +82,7 @@ def health() -> HealthResponse:
     total, free = registry.vram_mb()
     return HealthResponse(
         ok=True,
+        engine=config.ENGINE,
         stub_mode=config.STUB_MODE,
         device=config.DEVICE,
         cuda_available=registry.cuda_available(),
@@ -119,7 +126,8 @@ def post_generate(body: GenerateRequest, request: Request) -> GenerateResponse:
             seed=body.seed,
             progress=job.set_progress,
         )
-        stem = unique_stem(f"{song_id}-{body.style}")
+        stem = unique_stem(f"{song_id}-{body.style}-{config.ENGINE}")
+        prune_output()
         written = write_wav(audio, sr, output_path(stem))
         return {
             "result_url": str(base).rstrip("/") + f"/files/{written.name}",
@@ -129,7 +137,7 @@ def post_generate(body: GenerateRequest, request: Request) -> GenerateResponse:
     job = jobs().submit(
         "generate",
         run,
-        meta={"song_id": song_id, "style": body.style},
+        meta={"song_id": song_id, "style": body.style, "engine": config.ENGINE},
     )
     log.info("queued generate job %s for %s/%s", job.id, song_id, body.style)
     return GenerateResponse(job_id=job.id)
@@ -183,3 +191,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

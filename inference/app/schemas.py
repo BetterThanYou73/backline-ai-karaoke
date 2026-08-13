@@ -1,4 +1,4 @@
-"""Request/response models. Mirrors section 5 of the build spec."""
+﻿"""Request/response models. Mirrors section 5 of the build spec."""
 
 from typing import Literal, Optional
 
@@ -66,6 +66,7 @@ JobStatus = Literal["queued", "running", "done", "error"]
 
 class StatusResponse(BaseModel):
     job_id: str
+    engine: Optional[str] = None
     status: JobStatus
     progress: float = 0.0
     result_url: Optional[str] = None
@@ -95,6 +96,7 @@ class TranscribeResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     ok: bool
+    engine: str
     stub_mode: bool
     device: str
     cuda_available: bool
@@ -102,3 +104,4 @@ class HealthResponse(BaseModel):
     vram_free_mb: Optional[int] = None
     loaded_model: Optional[str] = None
     styles: list[str]
+

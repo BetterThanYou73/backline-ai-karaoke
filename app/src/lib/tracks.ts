@@ -31,8 +31,17 @@ function comboKey(songId: string, style: StyleId): string {
   return `${songId}::${style}`;
 }
 
-function cacheFileName(songId: string, style: StyleId): string {
-  return `${songId}-${style}.wav`;
+/**
+ * Cached renders carry the engine that made them in the filename.
+ *
+ * Without it, a cache directory is a pile of wavs with no way to tell which
+ * came from which engine, and after an engine change you cannot tell what you
+ * are listening to. The engine is part of what the file *is*, so it belongs in
+ * the name and in the index, and switching engines no longer silently reuses
+ * the old one's output.
+ */
+function cacheFileName(songId: string, style: StyleId, engine: string): string {
+  return `${songId}-${style}-${engine}.wav`;
 }
 
 export async function requestTrack(
@@ -42,8 +51,16 @@ export async function requestTrack(
   const song = getSong(songId);
   if (!song) return { state: "error", error: `unknown song ${songId}` };
 
+  // A cache entry only counts if it came from the engine currently in use.
+  // Otherwise switching engines appears to do nothing, because every song you
+  // already played keeps serving the old engine's render.
+  const engine = await currentEngine();
   const cached = findTrack(songId, style);
-  if (cached && fs.existsSync(path.join(CACHE_DIR, cacheFileName(songId, style)))) {
+  if (
+    cached &&
+    cached.engine === engine &&
+    fs.existsSync(path.join(CACHE_DIR, cacheFileName(songId, style, engine)))
+  ) {
     return { state: "cached", track: cached };
   }
 
@@ -129,7 +146,13 @@ export async function pollTrack(
   }
 
   try {
-    const track = await ingest(job.result_url, songId, style, job.duration ?? 0);
+    const track = await ingest(
+      job.result_url,
+      songId,
+      style,
+      job.duration ?? 0,
+      job.engine ?? (await currentEngine()),
+    );
     inFlight.delete(key);
     return { state: "cached", track };
   } catch (error) {
@@ -141,17 +164,27 @@ export async function pollTrack(
   }
 }
 
+/** Which engine the inference server is currently rendering with. */
+async function currentEngine(): Promise<string> {
+  try {
+    return (await inference.health()).engine ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /** Copy a finished render into the local cache and index it. */
 async function ingest(
   resultUrl: string,
   songId: string,
   style: StyleId,
   duration: number,
+  engine: string,
 ) {
   const bytes = await inference.download(resultUrl);
   await fsp.mkdir(CACHE_DIR, { recursive: true });
 
-  const fileName = cacheFileName(songId, style);
+  const fileName = cacheFileName(songId, style, engine);
   const destination = path.join(CACHE_DIR, fileName);
 
   // Same write-then-rename discipline as the song index: a half-written wav in
@@ -164,6 +197,7 @@ async function ingest(
   return saveTrack({
     songId,
     style,
+    engine,
     file: fileName,
     bpm: song?.bpm ?? null,
     key: song?.key ?? null,

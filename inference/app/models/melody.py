@@ -105,6 +105,7 @@ def render_track(
     use_arranger = config.ENGINE != "musicgen"
     chords = _chords_for(audio, sr) if use_arranger else []
     beat_times = _beats_for(audio, sr) if use_arranger else None
+    downbeat_phase = _downbeat_for(beat_times, chords) if use_arranger else 0
 
     rendered = np.zeros(0, dtype=np.float32)
     chunk_seconds = max(5.0, min(config.CHUNK_SECONDS, 30.0))
@@ -120,7 +121,7 @@ def render_track(
 
         chunk = (
             _arranger_chunk(
-                melody, sr, style, seed + index, length, chords, start, beat_times
+                melody, sr, style, seed + index, length, chords, start, beat_times, downbeat_phase
             )
             if config.ENGINE != "musicgen"
             else _musicgen_chunk(melody, sr, style, seed + index, length)
@@ -267,6 +268,7 @@ def _arranger_chunk(
     chords: list[dict] | None = None,
     chunk_start: float = 0.0,
     beat_times: np.ndarray | None = None,
+    downbeat_phase: int = 0,
 ) -> np.ndarray:
     """Backing track for one chunk, played on the song's own grid.
 
@@ -298,7 +300,20 @@ def _arranger_chunk(
         chords=chords,
         chunk_start=chunk_start,
         beat_times=beat_times,
+        downbeat_phase=downbeat_phase,
     )
+
+
+def _downbeat_for(beat_times: np.ndarray | None, chords: list[dict]) -> int:
+    """Which of the tracked beats starts a bar."""
+    if beat_times is None or beat_times.size == 0:
+        return 0
+    try:
+        from .analyze import estimate_downbeat_phase
+
+        return estimate_downbeat_phase(beat_times, chords)
+    except Exception:
+        return 0
 
 
 def _beats_for(audio: np.ndarray, sr: int) -> np.ndarray | None:
@@ -347,5 +362,6 @@ def _autocorr_pitch(
 
 
 __all__ = ["render_track", "stable_seed"]
+
 
 
