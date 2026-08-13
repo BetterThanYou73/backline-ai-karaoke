@@ -93,7 +93,12 @@ def render_track(
         total = min(total, limit)
 
     plan = _chunk_plan(total)
-    render_chunk = _stub_chunk if config.STUB_MODE else _musicgen_chunk
+
+    # Chords come from the whole song, once, not per chunk. A 30 second window
+    # does not contain enough context to tell a progression from a coincidence,
+    # and the chunk renderers need absolute song time anyway to know which
+    # chord they are sitting on.
+    chords = _chords_for(audio, sr) if config.STUB_MODE else []
 
     rendered = np.zeros(0, dtype=np.float32)
     chunk_seconds = max(5.0, min(config.CHUNK_SECONDS, 30.0))
@@ -107,7 +112,11 @@ def render_track(
         end = int((start + length) * sr)
         melody = audio[begin:end]
 
-        chunk = render_chunk(melody, sr, style, seed + index, length)
+        chunk = (
+            _stub_chunk(melody, sr, style, seed + index, length, chords, start)
+            if config.STUB_MODE
+            else _musicgen_chunk(melody, sr, style, seed + index, length)
+        )
         chunk = match_length(chunk, int(length * config.GENERATION_SR))
 
         rendered = (
@@ -221,15 +230,29 @@ def _musicgen_chunk(
 # --------------------------------------------------------------------------
 
 
-def _stub_chunk(
-    melody: np.ndarray, sr: int, style: Style, seed: int, seconds: float
-) -> np.ndarray:
-    """Placeholder instrumental, built from the source melody.
+def _chords_for(audio: np.ndarray, sr: int) -> list[dict]:
+    """The source song's own chord progression, or [] if it cannot be had."""
+    try:
+        from .analyze import extract_chords
 
-    Extracts a coarse pitch track, then hands it to the stub arranger, which
-    infers the key, picks a progression and plays a small band over it. The
-    earlier version played the melody back as bare sine tones over a click,
-    which followed the tune correctly and still sounded like a toy.
+        return extract_chords(audio, sr)
+    except Exception:
+        return []
+
+
+def _stub_chunk(
+    melody: np.ndarray,
+    sr: int,
+    style: Style,
+    seed: int,
+    seconds: float,
+    chords: list[dict] | None = None,
+    chunk_start: float = 0.0,
+) -> np.ndarray:
+    """Placeholder instrumental, built from the source melody and its chords.
+
+    Extracts a coarse pitch track, then hands it and the song's real chord
+    progression to the stub arranger.
     """
     frame = int(0.046 * sr)
     if frame <= 0:
@@ -253,6 +276,8 @@ def _stub_chunk(
         seconds=seconds,
         sr=config.GENERATION_SR,
         seed=seed,
+        chords=chords,
+        chunk_start=chunk_start,
     )
 
 

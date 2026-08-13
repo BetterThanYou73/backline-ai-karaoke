@@ -105,12 +105,107 @@ def extract_melody_contour(
     return contour
 
 
+def extract_chords(audio: np.ndarray, sr: int) -> list[dict]:
+    """Recover the song's chord progression as timed segments.
+
+    Beat-synchronous chroma matched against the 24 major and minor triads.
+    Three things matter for this being usable rather than noise:
+
+    * The harmonic component only. Drums smear energy across every pitch class,
+      and on a percussive track the chroma is mostly kick and snare.
+    * Aggregating per beat, not per frame. Chords change on musical time, so
+      averaging within a beat both denoises and puts the boundaries where they
+      belong.
+    * Smoothing across beats before committing. Raw per-beat matches flap
+      between a chord and its relative, which sounds like a mistake even when
+      the average is right.
+
+    Returns [{start, end, root, quality, name}], root as a pitch class 0-11.
+    """
+    import librosa
+
+    if audio.size < sr:
+        return []
+
+    harmonic = librosa.effects.harmonic(audio, margin=3.0)
+    tempo, beats = librosa.beat.beat_track(y=harmonic, sr=sr, hop_length=HOP)
+    del tempo
+
+    if len(beats) < 4:
+        return []
+
+    chroma = librosa.feature.chroma_cqt(y=harmonic, sr=sr, hop_length=HOP)
+    # Median rather than mean: resistant to a single bright transient frame
+    # dragging the whole beat toward the wrong pitch class.
+    per_beat = librosa.util.sync(chroma, beats, aggregate=np.median)
+
+    templates = []
+    labels = []
+    for root in range(12):
+        for quality, intervals in (("maj", (0, 4, 7)), ("min", (0, 3, 7))):
+            template = np.zeros(12, dtype=np.float32)
+            for interval in intervals:
+                template[(root + interval) % 12] = 1.0
+            templates.append(template / np.linalg.norm(template))
+            labels.append((root, quality))
+    template_matrix = np.stack(templates)
+
+    norms = np.linalg.norm(per_beat, axis=0, keepdims=True)
+    normalized = per_beat / np.where(norms > 0, norms, 1.0)
+    scores = template_matrix @ normalized  # (24, n_beats)
+
+    raw = np.argmax(scores, axis=0)
+
+    # Smooth over a five beat window, roughly a bar either side.
+    smoothed = np.copy(raw)
+    window = 2
+    for i in range(len(raw)):
+        lo = max(0, i - window)
+        hi = min(len(raw), i + window + 1)
+        values, counts = np.unique(raw[lo:hi], return_counts=True)
+        smoothed[i] = values[np.argmax(counts)]
+
+    # sync() aggregates the spans *between* boundaries, so N beat frames give
+    # N+1 columns: before the first beat, each gap, and after the last. The
+    # time boundaries have to be padded to match or the last beat indexes off
+    # the end.
+    beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP)
+    bounds = np.concatenate([[0.0], beat_times, [len(audio) / sr]])
+
+    segments: list[dict] = []
+    for index, choice in enumerate(smoothed):
+        if index + 1 >= len(bounds):
+            break
+        root, quality = labels[int(choice)]
+        start = float(bounds[index])
+        end = float(bounds[index + 1])
+
+        if segments and segments[-1]["root"] == root and segments[-1]["quality"] == quality:
+            segments[-1]["end"] = round(end, 3)
+            continue
+
+        segments.append(
+            {
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "root": int(root),
+                "quality": quality,
+                "name": f"{_PITCH_CLASSES[root]}{'' if quality == 'maj' else 'm'}",
+            }
+        )
+
+    # Drop anything shorter than half a beat: those are transitions, not chords.
+    minimum = 0.2
+    return [s for s in segments if s["end"] - s["start"] >= minimum]
+
+
 def analyze_file(path: Path, with_contour: bool = True) -> dict:
     audio, sr = load_mono(path, ANALYSIS_SR)
     duration = round(len(audio) / sr, 3)
     return {
         "bpm": estimate_bpm(audio, sr),
         "key": estimate_key(audio, sr),
+        "chords": extract_chords(audio, sr),
         "melody_contour": extract_melody_contour(audio, sr) if with_contour else [],
         "duration": duration,
     }

@@ -19,9 +19,20 @@ class AudioSource(BaseModel):
         return self
 
 
+class Chord(BaseModel):
+    start: float
+    end: float
+    root: int  # pitch class, 0 = C
+    quality: str  # "maj" | "min"
+    name: str
+
+
 class AnalyzeResponse(BaseModel):
     bpm: float
     key: str
+    # The song's own progression, so generated backing can follow its harmony
+    # rather than a canned loop in the same key.
+    chords: list[Chord] = []
     # [[seconds, midi_note_or_null], ...] downsampled to ~10Hz for transport.
     melody_contour: list[list[Optional[float]]]
     duration: float

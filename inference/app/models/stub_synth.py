@@ -565,6 +565,25 @@ def _reverb_tail(signal: np.ndarray, sr: int, amount: float) -> np.ndarray:
     return ((1 - amount) * signal + amount * wet).astype(np.float32)
 
 
+def _chord_voicing(root: int, quality: str) -> list[int]:
+    """Triad as semitone offsets above the root."""
+    return [root, root + (3 if quality == "min" else 4), root + 7]
+
+
+def _plan_from_chords(
+    chords: list[dict], chunk_start: float, seconds: float
+) -> list[tuple[float, float, int, str]]:
+    """Chord segments overlapping this chunk, in chunk-local time."""
+    plan: list[tuple[float, float, int, str]] = []
+    for chord in chords:
+        start = chord["start"] - chunk_start
+        end = chord["end"] - chunk_start
+        if end <= 0 or start >= seconds:
+            continue
+        plan.append((max(0.0, start), min(seconds, end), int(chord["root"]), chord["quality"]))
+    return plan
+
+
 def render(
     pitches: np.ndarray,
     frame_seconds: float,
@@ -573,19 +592,25 @@ def render(
     seconds: float,
     sr: int,
     seed: int,
+    chords: list[dict] | None = None,
+    chunk_start: float = 0.0,
 ) -> np.ndarray:
     """Render a placeholder instrumental for one chunk.
 
     `pitches` is a coarse per-frame f0 track of the source, zero where unvoiced.
-    The arrangement follows its key and phrasing; the lead doubles the melody an
-    octave down so it supports the singer rather than competing with them.
+    `chords` is the source song's own progression, in absolute song time.
+
+    Using the real chords is the whole difference between an instrumental that
+    belongs to this song and one that merely shares its key. An earlier version
+    inferred a tonic and then looped a canned four bar progression, which was
+    fine for a few seconds and increasingly wrong over a verse: the backing was
+    playing a different song in the same key.
     """
     kit = KITS.get(style_id, KITS["bloom"])
     rng = np.random.default_rng(seed)
     samples = max(1, int(seconds * sr))
 
     tonic, minor = _infer_key(pitches)
-    progression = _PROGRESSIONS.get(style_id, _PROGRESSIONS["bloom"])
 
     bpm = float(np.clip(bpm if bpm and bpm > 0 else 100.0, 60, 170))
     beat = 60.0 / bpm
@@ -602,37 +627,54 @@ def render(
         end = min(samples, start + buffer.size)
         target[start:end] += buffer[: end - start]
 
-    # --- chords and bass, one bar at a time ---
-    bar_index = 0
-    while bar_index * bar < seconds:
-        degree = progression[bar_index % len(progression)]
-        chord = _chord_notes(tonic, minor, degree)
-        root = chord[0]
+    # --- chords and bass ---
+    plan = _plan_from_chords(chords or [], chunk_start, seconds)
 
-        # Pad holds the triad for the bar, voiced around the octave below
-        # middle C so it sits under a sung melody.
-        for interval in chord:
-            midi = 48 + (interval % 24)
+    if not plan:
+        # No chord analysis available, so fall back to a progression in the
+        # inferred key. Better than silence, and honest about being a guess.
+        progression = _PROGRESSIONS.get(style_id, _PROGRESSIONS["bloom"])
+        bar_index = 0
+        while bar_index * bar < seconds:
+            degree = progression[bar_index % len(progression)]
+            notes = _chord_notes(tonic, minor, degree)
+            plan.append(
+                (
+                    bar_index * bar,
+                    min(seconds, (bar_index + 1) * bar),
+                    notes[0] % 12,
+                    "min" if minor else "maj",
+                )
+            )
+            bar_index += 1
+
+    for start, end, root, quality in plan:
+        span = end - start
+        if span <= 0.05:
+            continue
+
+        # Pad holds the triad for as long as the chord lasts, voiced around the
+        # octave below middle C so it sits under a sung melody.
+        for interval in _chord_voicing(root, quality):
             mix_into(
                 pad,
-                _note(_midi_to_hz(midi), bar * 1.05, sr, kit.pad, rng),
-                bar_index * bar,
+                _note(_midi_to_hz(48 + (interval % 24)), span * 1.05, sr, kit.pad, rng),
+                start,
             )
 
-        # Bass plays the pattern for this style.
-        for sixteenth in kit.bass_pattern:
-            at = bar_index * bar + sixteenth * (beat / 4)
-            if at >= seconds:
-                break
-            # Walk toward the next chord on the last note of the bar.
-            note = root if sixteenth < 12 else root + (2 if minor else 4)
-            mix_into(
-                bass,
-                _note(_midi_to_hz(36 + (note % 24)), beat * 0.9, sr, kit.bass, rng),
-                at,
-            )
-
-        bar_index += 1
+        # Bass plays this style's pattern for as many bars as the chord covers.
+        position = start
+        while position < end - 0.05:
+            for sixteenth in kit.bass_pattern:
+                at = position + sixteenth * (beat / 4)
+                if at >= end:
+                    break
+                mix_into(
+                    bass,
+                    _note(_midi_to_hz(36 + (root % 24)), beat * 0.9, sr, kit.bass, rng),
+                    at,
+                )
+            position += bar
 
     # --- lead, following the source melody ---
     # Group consecutive frames of similar pitch into notes, so the lead phrases
